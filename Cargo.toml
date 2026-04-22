@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "indexer",
+    "storage",
+    "search",
+    "cli",
+]
+resolver = "2"

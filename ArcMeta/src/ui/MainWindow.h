@@ -69,7 +69,6 @@ private:
     void updateStatusBar();
     void navigateTo(const QString& path, bool record = true);
     void initToolbar();
-    void initDriveBar(); // 2026-06-xx 新增：初始化盘符选择栏
     void setupSplitters();
     void setupCustomTitleBarButtons();
     void initTrayIcon();
@@ -95,16 +94,9 @@ private:
     QToolBar* m_toolbar    = nullptr;
     QLineEdit* m_pathEdit  = nullptr;
     QLineEdit* m_searchEdit = nullptr;
-    QLineEdit* m_extEdit = nullptr; // 2026-06-xx 新增：扩展名输入框
     QPushButton* m_btnBack    = nullptr;
     QPushButton* m_btnForward = nullptr;
     QPushButton* m_btnUp      = nullptr;
-    QPushButton* m_btnSearch   = nullptr; // 2026-06-xx 新增：橙色搜索按钮
-
-    // 2026-06-xx 新增：盘符选择器组件
-    QWidget* m_driveBarWidget = nullptr;
-    QHBoxLayout* m_driveBarLayout = nullptr;
-    QSet<QString> m_activeDrives;
 
     // 2026-04-12 按照用户要求：搜索历史悬浮面板及历史记录
     QWidget* m_searchContainer = nullptr; // 搜索框容器

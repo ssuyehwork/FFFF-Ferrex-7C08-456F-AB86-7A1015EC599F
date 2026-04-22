@@ -37,11 +37,9 @@ public:
      * @brief 2026-04-12 按照用户要求：基于数据库的文件名关键词搜索
      * @param keyword 搜索关键词
      * @param parentPath 局部搜索时指定父路径，为空则全局搜索
-     * @param volumes 动态盘符集合 (如 C, D, G)
-     * @param extension 扩展名过滤
-     * @return 匹配的文件物理路径列表（最多 1000 条）
+     * @return 匹配的文件物理路径列表（最多 300 条）
      */
-    static QStringList searchByKeyword(const QString& keyword, const QString& parentPath = "", const QStringList& volumes = {}, const QString& extension = "");
+    static QStringList searchByKeyword(const QString& keyword, const QString& parentPath = "");
 
     /**
      * @brief 获取未分类的文件路径

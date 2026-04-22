@@ -163,33 +163,32 @@ bool ItemRepo::updatePath(const std::wstring& volume, const std::wstring& frn, c
     return q.exec();
 }
 
-QStringList ItemRepo::searchByKeyword(const QString& keyword, const QString& parentPath, const QStringList& volumes, const QString& extension) {
+QStringList ItemRepo::searchByKeyword(const QString& keyword, const QString& parentPath) {
     QSqlDatabase db = ArcMeta::Database::instance().getThreadDatabase();
     QSqlQuery q(db);
     
-    // 2026-06-xx 物理进化：构建动态 WHERE 子句以支持多盘符和扩展名
-    QString sql = "SELECT MIN(path) FROM items WHERE deleted = 0 AND type = 'file'";
-
-    if (!parentPath.isEmpty()) sql += " AND parent_path = :parentPath";
-    if (!keyword.isEmpty()) sql += " AND path LIKE :keyword";
-    if (!extension.isEmpty()) sql += " AND path LIKE :extension";
-
-    if (!volumes.isEmpty()) {
-        QStringList volFilters;
-        for(int i=0; i<volumes.size(); ++i) volFilters << QString(":vol%1").arg(i);
-        sql += " AND volume IN (" + volFilters.join(",") + ")";
-    }
-
-    sql += " GROUP BY file_id_128 LIMIT 1000";
-
-    q.prepare(sql);
-    if (!parentPath.isEmpty()) q.bindValue(":parentPath", parentPath);
-    if (!keyword.isEmpty()) q.bindValue(":keyword", "%" + keyword + "%");
-    if (!extension.isEmpty()) q.bindValue(":extension", "%." + extension);
-
-    if (!volumes.isEmpty()) {
-        for(int i=0; i<volumes.size(); ++i) {
-            q.bindValue(QString(":vol%1").arg(i), volumes[i]);
+    // 2026-06-xx 物理修复：基于非空 Fallback ID 机制回归高性能查询。
+    // 铁律：允许关键词为空。由于 ID 保证非空唯一，直接按 file_id_128 分组。
+    QString sql;
+    if (parentPath.isEmpty()) {
+        if (keyword.isEmpty()) {
+            sql = "SELECT MIN(path) FROM items WHERE deleted = 0 AND type = 'file' GROUP BY file_id_128 LIMIT 1000";
+            q.prepare(sql);
+        } else {
+            sql = "SELECT MIN(path) FROM items WHERE path LIKE ? AND deleted = 0 AND type = 'file' GROUP BY file_id_128 LIMIT 1000";
+            q.prepare(sql);
+            q.addBindValue("%" + keyword + "%");
+        }
+    } else {
+        if (keyword.isEmpty()) {
+            sql = "SELECT MIN(path) FROM items WHERE parent_path = ? AND deleted = 0 AND type = 'file' GROUP BY file_id_128 LIMIT 1000";
+            q.prepare(sql);
+            q.addBindValue(parentPath);
+        } else {
+            sql = "SELECT MIN(path) FROM items WHERE parent_path = ? AND path LIKE ? AND deleted = 0 AND type = 'file' GROUP BY file_id_128 LIMIT 1000";
+            q.prepare(sql);
+            q.addBindValue(parentPath);
+            q.addBindValue("%" + keyword + "%");
         }
     }
     

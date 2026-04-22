@@ -72,39 +72,40 @@ MainWindow::MainWindow(QWidget* parent)
         setWindowFlag(Qt::WindowStaysOnTopHint, true);
     }
 
-    // 应用全局样式（对标 HTML 极客黑风格）
+    // 应用全局样式（包括滚动条美化）
     QString qss = R"(
-        QMainWindow { background-color: #07090b; }
+        QMainWindow { background-color: #1E1E1E; }
 
         /* 核心容器样式还原 - 强化 1 像素物理切割感，回归绝对直角设计 */
         #SidebarContainer, #ListContainer, #EditorContainer, #MetadataContainer, #FilterContainer {
-            background-color: #07090b;
-            border: 1px solid #1e252c;
+            background-color: #1E1E1E;
+            border: 1px solid #333333;
             border-radius: 0px;
         }
 
-        /* 容器标题栏样式 */
+        /* 容器标题栏样式 (还原旧版 #252526 实色背景与下边框) */
+        /* 2026-03-xx 物理回归：标题栏必须保持绝对直角，以体现“物理切割感” */
         #ContainerHeader {
-            background-color: #0d1014;
-            border-bottom: 1px solid #1e252c;
+            background-color: #252526;
+            border-bottom: 1px solid #333333;
             border-top-left-radius: 0px;
             border-top-right-radius: 0px;
         }
 
-        /* 全局滚动条美化 - 对标 HTML 自定义滚动条 */
+        /* 全局滚动条美化 */
         QScrollBar:vertical {
             border: none;
-            background: #07090b;
-            width: 6px;
+            background: transparent;
+            width: 4px;
             margin: 0px;
         }
         QScrollBar::handle:vertical {
-            background: #252e37;
+            background: #333333;
             min-height: 20px;
-            border-radius: 0px;
+            border-radius: 2px;
         }
         QScrollBar::handle:vertical:hover {
-            background: #3d5060;
+            background: #444444;
         }
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
             height: 0px;
@@ -115,43 +116,46 @@ MainWindow::MainWindow(QWidget* parent)
 
         QScrollBar:horizontal {
             border: none;
-            background: #07090b;
-            height: 6px;
+            background: transparent;
+            height: 4px;
             margin: 0px;
         }
         QScrollBar::handle:horizontal {
-            background: #252e37;
+            background: #333333;
             min-width: 20px;
-            border-radius: 0px;
+            border-radius: 2px;
         }
         QScrollBar::handle:horizontal:hover {
-            background: #3d5060;
+            background: #444444;
+        }
+        QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+            width: 0px;
+        }
+        QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+            background: none;
         }
 
         /* 统一复选框样式 */
-        QCheckBox { color: #c8d4dc; font-size: 12px; spacing: 5px; }
-        QCheckBox::indicator { width: 15px; height: 15px; border: 1px solid #252e37; border-radius: 0px; background: #0d1014; }
-        QCheckBox::indicator:hover { border: 1px solid #FF8C00; }
+        QCheckBox { color: #EEEEEE; font-size: 12px; spacing: 5px; }
+        QCheckBox::indicator { width: 15px; height: 15px; border: 1px solid #444; border-radius: 2px; background: #1E1E1E; }
+        QCheckBox::indicator:hover { border: 1px solid #666; }
         QCheckBox::indicator:checked { 
-            border: 1px solid #FF8C00;
-            background: #0d1014;
-            image: url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjRkY4QzAwIiBzdHJva2Utd2lkdGg9IjMuNSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cG9seWxpbmUgcG9pbnRzPSIyMCA2IDkgMTcgNCAxMiI+PC9wb2x5bGluZT48L3N2Zz4=);
+            border: 1px solid #378ADD;
+            background: #1E1E1E;
+            image: url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMzc4QUREIiBzdHJva2Utd2lkdGg9IjMuNSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cG9seWxpbmUgcG9pbnRzPSIyMCA2IDkgMTcgNCAxMiI+PC9wb2x5bGluZT48L3N2Zz4=);
         }
 
-        /* 统一输入框与多行文本框样式 */
+        /* 统一输入框与多行文本框样式，应用 6px 圆角规范 */
         QLineEdit, QPlainTextEdit, QTextEdit {
-            background: #111519;
-            border: 1px solid #252e37;
-            border-radius: 0px;
-            color: #c8d4dc;
+            background: #1E1E1E;
+            border: 1px solid #333333;
+            border-radius: 6px;
+            color: #EEEEEE;
             padding-left: 8px;
         }
         QLineEdit:focus {
-            border: 1px solid #FF8C00;
-            background: #161b20;
+            border: 1px solid #378ADD;
         }
-
-        QLabel { color: #c8d4dc; }
     )";
     setStyleSheet(qss);
 
@@ -421,43 +425,33 @@ void MainWindow::initUi() {
     m_searchHistoryPanel = new SearchHistoryPanel(this);
     m_searchHistoryPanel->setHistory(m_searchHistory);
 
-    // 回车搜索核心逻辑 (对标 HTML)
-    auto performSearch = [this]() {
-        QString keyword = m_searchEdit->text().trimmed();
-        QString extension = m_extEdit->text().trimmed();
-        if (extension.startsWith(".")) extension = extension.mid(1);
-
-        if (keyword.isEmpty() && extension.isEmpty()) {
+    // 回车搜索核心逻辑
+    auto performSearch = [this](const QString& keyword) {
+        if (keyword.isEmpty()) {
             m_contentPanel->loadDirectory(m_currentPath);
             m_searchHistoryPanel->hide();
             return;
         }
 
-        // 维护历史记录
-        if (!keyword.isEmpty()) {
-            m_searchHistory.removeAll(keyword);
-            m_searchHistory.prepend(keyword);
-            if (m_searchHistory.size() > 10) m_searchHistory.removeLast();
-            QSettings settings("ArcMeta", "ArcMeta");
-            settings.setValue("Search/History", m_searchHistory);
-            m_searchHistoryPanel->setHistory(m_searchHistory);
-        }
+        // 维护历史记录（去重，置顶，最多保持10条）
+        m_searchHistory.removeAll(keyword);
+        m_searchHistory.prepend(keyword);
+        if (m_searchHistory.size() > 10) m_searchHistory.removeLast();
+        QSettings settings("ArcMeta", "ArcMeta");
+        settings.setValue("Search/History", m_searchHistory);
+        m_searchHistoryPanel->setHistory(m_searchHistory);
         m_searchHistoryPanel->hide();
 
-        // 执行动态盘符 + 扩展名搜索
-        QStringList driveList = m_activeDrives.values();
-        // 2026-06-xx 物理加固：将搜索请求分流至支持多盘符和扩展名的高级接口
-        QStringList paths = ItemRepo::searchByKeyword(keyword, "", driveList, extension);
+        // 按照用户要求：不再区分局部/全局，设定为全局搜索
+        // 全局数据库匹配加载
+        QStringList paths = ItemRepo::searchByKeyword(keyword, "");
         m_contentPanel->loadPaths(paths);
-
-        // 更新状态栏耗时 (模拟)
-        m_statusLeft->setText(QString("结果 %1").arg(paths.size()));
-        m_statusCenter->setText("耗时 15.2 ms");
     };
 
-    connect(m_searchEdit, &QLineEdit::returnPressed, this, performSearch);
-    connect(m_extEdit, &QLineEdit::returnPressed, this, performSearch);
-    connect(m_btnSearch, &QPushButton::clicked, this, performSearch);
+    // 2026-05-27 物理加固：补全 this 上下文
+    connect(m_searchEdit, &QLineEdit::returnPressed, this, [this, performSearch]() {
+        performSearch(m_searchEdit->text().trimmed());
+    });
     
     m_searchEdit->installEventFilter(this); // 拦截 FocusIn 事件展示历史面板
 
@@ -694,48 +688,66 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
 void MainWindow::initToolbar() {
     auto createBtn = [this](const QString& iconKey, const QString& tip) {
         QPushButton* btn = new QPushButton(this);
-        btn->setAttribute(Qt::WA_Hover);
-        btn->setFixedSize(32, 28);
+        btn->setAttribute(Qt::WA_Hover); // 2026-05-20 性能优化：必须开启 Hover 属性以触发悬停事件
+        btn->setFixedSize(32, 28); // 极致精简宽度
         
-        QIcon icon = UiHelper::getIcon(iconKey, QColor("#c8d4dc"));
+        QIcon icon = UiHelper::getIcon(iconKey, QColor("#EEEEEE"));
         btn->setIcon(icon);
         btn->setIconSize(QSize(18, 18));
         
+        // 2026-03-xx 按照宪法要求：禁绝原生 ToolTip，强制对接 ToolTipOverlay
         btn->setProperty("tooltipText", tip);
         btn->installEventFilter(this);
 
+        // 极致精简样式：无边框，仅悬停可见背景
         btn->setStyleSheet(
-            "QPushButton { background: transparent; border: none; border-radius: 0px; }"
-            "QPushButton:hover { background: #161b20; }"
-            "QPushButton:pressed { background: #1e252c; }"
+            "QPushButton { background: transparent; border: none; border-radius: 4px; }"
+            "QPushButton:hover { background: rgba(255, 255, 255, 0.1); }"
+            "QPushButton:pressed { background: rgba(255, 255, 255, 0.2); }"
+            "QPushButton:disabled { opacity: 0.3; }"
         );
         return btn;
     };
 
-    m_btnBack = createBtn("nav_prev", "后退");
-    m_btnForward = createBtn("nav_next", "前进");
-    m_btnUp = createBtn("arrow_up", "上级");
+    m_btnBack = createBtn("nav_prev", "");
+    m_btnBack->setProperty("tooltipText", "后退");
+    m_btnBack->installEventFilter(this);
+
+    m_btnForward = createBtn("nav_next", "");
+    m_btnForward->setProperty("tooltipText", "前进");
+    m_btnForward->installEventFilter(this);
+
+    m_btnUp = createBtn("arrow_up", "");
+    m_btnUp->setProperty("tooltipText", "上级");
+    m_btnUp->installEventFilter(this);
 
     connect(m_btnBack, &QPushButton::clicked, this, &MainWindow::onBackClicked);
     connect(m_btnForward, &QPushButton::clicked, this, &MainWindow::onForwardClicked);
     connect(m_btnUp, &QPushButton::clicked, this, &MainWindow::onUpClicked);
 
+    // --- 路径地址栏重构 (Stack: Breadcrumb + QLineEdit) ---
     m_pathStack = new QStackedWidget(this);
-    m_pathStack->setFixedHeight(36);
+    // 2026-03-xx 按照用户最新要求：地址栏高度还原为 32px
+    m_pathStack->setFixedHeight(32);
     m_pathStack->setMinimumWidth(300);
-    m_pathStack->setStyleSheet("QStackedWidget { background: #111519; border: 1px solid #252e37; border-radius: 0px; }");
+    m_pathStack->setStyleSheet("QStackedWidget { background: #1E1E1E; border: 1px solid #444444; border-radius: 6px; }");
 
+    // A. 面包屑视图
     m_breadcrumbBar = new BreadcrumbBar(m_pathStack);
     m_pathStack->addWidget(m_breadcrumbBar);
 
+    // B. 编辑视图
     m_pathEdit = new QLineEdit(m_pathStack);
     m_pathEdit->setPlaceholderText("输入路径...");
-    m_pathEdit->setFixedHeight(36);
-    m_pathEdit->setStyleSheet("QLineEdit { background: transparent; border: none; color: #c8d4dc; padding-left: 8px; }");
+    // 物理对齐：修正高度为 32px 以匹配 Stack 容器，确保圆角边框完美重合
+    m_pathEdit->setFixedHeight(32);
+    m_pathEdit->setStyleSheet("QLineEdit { background: transparent; border: none; color: #EEEEEE; padding-left: 8px; }");
     m_pathStack->addWidget(m_pathEdit);
 
     m_pathStack->setCurrentWidget(m_breadcrumbBar);
 
+    // 交互逻辑
+    // 2026-05-27 物理加固：补全 this 上下文
     connect(m_breadcrumbBar, &BreadcrumbBar::blankAreaClicked, this, [this]() {
         m_pathEdit->setText(QDir::toNativeSeparators(m_currentPath));
         m_pathStack->setCurrentWidget(m_pathEdit);
@@ -743,6 +755,7 @@ void MainWindow::initToolbar() {
         m_pathEdit->selectAll();
     });
     connect(m_pathEdit, &QLineEdit::editingFinished, this, [this]() {
+        // 只有在失去焦点或按回车后切回面包屑 (如果不是由于 confirm 跳转)
         if (m_pathStack->currentWidget() == m_pathEdit) {
             m_pathStack->setCurrentWidget(m_breadcrumbBar);
         }
@@ -751,217 +764,84 @@ void MainWindow::initToolbar() {
         navigateTo(path);
     });
 
-    // --- 搜索栏重构 (对标 HTML) ---
+
+    // 2026-04-12 按照用户要求：搜索框容器（搜索框 + 模式切换按钮）
     m_searchContainer = new QWidget(this);
     m_searchContainer->setStyleSheet("background: transparent;");
     QHBoxLayout* searchLayout = new QHBoxLayout(m_searchContainer);
     searchLayout->setContentsMargins(0, 0, 0, 0);
     searchLayout->setSpacing(0);
 
-    // 搜索图标包装 (左侧装饰)
-    QLabel* searchIconLabel = new QLabel(m_searchContainer);
-    searchIconLabel->setFixedSize(36, 36);
-    searchIconLabel->setPixmap(UiHelper::getIcon("search", QColor("#3d5060")).pixmap(15, 15));
-    searchIconLabel->setAlignment(Qt::AlignCenter);
-    searchIconLabel->setStyleSheet("border: 1px solid #252e37; border-right: none; background: #111519;");
-    searchLayout->addWidget(searchIconLabel);
-
     m_searchEdit = new QLineEdit(m_searchContainer);
-    m_searchEdit->setPlaceholderText("文件名 / 关键词...");
-    m_searchEdit->setMinimumWidth(250);
-    m_searchEdit->setFixedHeight(36);
+    m_searchEdit->setPlaceholderText("查找文件...");
+    m_searchEdit->setMinimumWidth(180);
+    m_searchEdit->setFixedHeight(32);
+    m_searchEdit->addAction(UiHelper::getIcon("search", QColor("#888888")), QLineEdit::LeadingPosition);
+    // 按照用户要求：移除局部/全局切换按钮，恢复搜索框 6px 完整圆角
     m_searchEdit->setStyleSheet(
-        "QLineEdit { background: #111519; border: 1px solid #252e37; border-right: none; border-radius: 0px; color: #c8d4dc; padding-left: 12px; }"
-        "QLineEdit:focus { border-color: #FF8C00; background: #161b20; }"
+        "QLineEdit { background: #1E1E1E; border: 1px solid #444444;"
+        "  border-radius: 6px;"
+        "  color: #EEEEEE; padding-left: 5px; }"
+        "QLineEdit:focus { border: 1px solid #378ADD; }"
     );
+
     searchLayout->addWidget(m_searchEdit, 1);
-
-    // 扩展名分隔符
-    QLabel* extDivider = new QLabel(".", m_searchContainer);
-    extDivider->setFixedSize(20, 36);
-    extDivider->setAlignment(Qt::AlignCenter);
-    extDivider->setStyleSheet("background: #161b20; border-top: 1px solid #252e37; border-bottom: 1px solid #252e37; border-left: 1px solid #252e37; color: #FF8C00; font-weight: bold; font-size: 14px;");
-    searchLayout->addWidget(extDivider);
-
-    m_extEdit = new QLineEdit(m_searchContainer);
-    m_extEdit->setPlaceholderText("扩展名");
-    m_extEdit->setFixedSize(80, 36);
-    m_extEdit->setStyleSheet(
-        "QLineEdit { background: #111519; border: 1px solid #252e37; border-left: none; border-radius: 0px; color: #c8d4dc; padding: 0 10px; }"
-        "QLineEdit:focus { border-color: #FF8C00; background: #161b20; }"
-    );
-    searchLayout->addWidget(m_extEdit);
-
-    // 橙色搜索按钮
-    m_btnSearch = new QPushButton(m_searchContainer);
-    m_btnSearch->setText("搜索");
-    m_btnSearch->setIcon(UiHelper::getIcon("search", QColor("#000000")));
-    m_btnSearch->setFixedSize(80, 36);
-    m_btnSearch->setStyleSheet(
-        "QPushButton { background: #FF8C00; border: 1px solid #FF8C00; color: #000000; font-weight: bold; margin-left: 10px; }"
-        "QPushButton:hover { background: #c96e00; border-color: #c96e00; }"
-    );
-    searchLayout->addWidget(m_btnSearch);
 }
 
 
-
-void MainWindow::initDriveBar() {
-    m_driveBarWidget = new QWidget(this);
-    m_driveBarWidget->setFixedHeight(40);
-    m_driveBarWidget->setStyleSheet("background-color: #111519; padding: 0 16px; border-bottom: 1px solid #1e252c;");
-    m_driveBarLayout = new QHBoxLayout(m_driveBarWidget);
-    m_driveBarLayout->setContentsMargins(16, 0, 16, 0);
-    m_driveBarLayout->setSpacing(6);
-
-    QLabel* driveLabel = new QLabel("盘符", m_driveBarWidget);
-    driveLabel->setStyleSheet("color: #3d5060; font-weight: 600; font-size: 10px; text-transform: uppercase; margin-right: 4px;");
-    m_driveBarLayout->addWidget(driveLabel);
-
-    // 动态获取系统盘符
-    auto drives = QDir::drives();
-    for (const auto& info : drives) {
-        QString driveRoot = info.absolutePath();
-        QString driveLetter = driveRoot.left(1).toUpper();
-
-        QPushButton* chip = new QPushButton(driveLetter + ":", m_driveBarWidget);
-        chip->setCheckable(true);
-        chip->setFixedSize(60, 24);
-
-        // 初始激活 C 盘
-        if (driveLetter == "C") {
-            chip->setChecked(true);
-            m_activeDrives.insert(driveLetter);
-        }
-
-        QString chipStyle = R"(
-            QPushButton {
-                background-color: #161b20;
-                border: 1px solid #252e37;
-                color: #7a8f9e;
-                font-weight: 600;
-                font-size: 11px;
-                border-radius: 0px;
-            }
-            QPushButton:hover {
-                border-color: #c96e00;
-                color: #c8d4dc;
-            }
-            QPushButton:checked {
-                border-color: #FF8C00;
-                background-color: rgba(255,140,0,0.08);
-                color: #FF8C00;
-            }
-        )";
-        chip->setStyleSheet(chipStyle);
-
-        connect(chip, &QPushButton::toggled, this, [this, driveLetter](bool checked) {
-            if (checked) m_activeDrives.insert(driveLetter);
-            else m_activeDrives.remove(driveLetter);
-            updateStatusBar();
-            // TODO: 触发搜索联动
-        });
-
-        m_driveBarLayout->addWidget(chip);
-    }
-
-    m_driveBarLayout->addStretch();
-
-    QPushButton* allBtn = new QPushButton("全选 / 全清", m_driveBarWidget);
-    allBtn->setStyleSheet(
-        "QPushButton { color: #3d5060; border: 1px solid #1e252c; background: transparent; font-size: 10px; font-weight: 600; padding: 4px 10px; }"
-        "QPushButton:hover { color: #FF8C00; border-color: #FF8C00; }"
-    );
-    connect(allBtn, &QPushButton::clicked, this, [this]() {
-        bool anyUnchecked = false;
-        auto chips = m_driveBarWidget->findChildren<QPushButton*>();
-        for (auto c : chips) {
-            if (c->text().contains(":") && !c->isChecked()) { anyUnchecked = true; break; }
-        }
-
-        for (auto c : chips) {
-            if (c->text().contains(":")) c->setChecked(anyUnchecked);
-        }
-    });
-    m_driveBarLayout->addWidget(allBtn);
-}
 
 void MainWindow::setupSplitters() {
     QWidget* centralC = new QWidget(this);
     centralC->setObjectName("CentralWidget");
-    centralC->setStyleSheet("#CentralWidget { background-color: #07090b; }");
+    centralC->setStyleSheet("#CentralWidget { background-color: #1E1E1E; }");
     QVBoxLayout* mainL = new QVBoxLayout(centralC);
     mainL->setContentsMargins(0, 0, 0, 0); 
     mainL->setSpacing(0); 
 
     // --- 1. 自定义标题栏 (第一行) ---
     m_titleBarWidget = new QWidget(centralC);
-    m_titleBarWidget->setFixedHeight(44);
-    m_titleBarWidget->setStyleSheet("QWidget { background-color: #0d1014; border-bottom: 1px solid #1e252c; }");
+    m_titleBarWidget->setFixedHeight(32);
+    // 2026-03-xx 物理回归：将分割线重新锁定在第一行下方，保持物理切割感
+    m_titleBarWidget->setStyleSheet("QWidget { background-color: #1E1E1E; border-bottom: 1px solid #333333; }");
     m_titleBarLayout = new QHBoxLayout(m_titleBarWidget);
-    m_titleBarLayout->setContentsMargins(16, 0, 16, 0);
-    m_titleBarLayout->setSpacing(14);
+    m_titleBarLayout->setContentsMargins(8, 0, 5, 0); // 右侧对齐 5px 物理边距
+    m_titleBarLayout->setSpacing(8);
 
-    // Logo & Text
-    m_appNameLabel = new QLabel("FERREX", m_titleBarWidget);
-    m_appNameLabel->setStyleSheet("color: #FF8C00; font-size: 18px; font-weight: 700; letter-spacing: 0.12em;");
+    m_appNameLabel = new QLabel("ArcMeta", m_titleBarWidget);
+    m_appNameLabel->setStyleSheet("color: #AAAAAA; font-size: 12px; font-weight: bold;");
     m_titleBarLayout->addWidget(m_appNameLabel);
-
-    QLabel* badge = new QLabel("NTFS INDEXER", m_titleBarWidget);
-    badge->setStyleSheet("color: #3d5060; background: #111519; border: 1px solid #252e37; padding: 3px 8px; font-size: 11px; font-weight: 500;");
-    m_titleBarLayout->addWidget(badge);
-
     m_titleBarLayout->addStretch();
 
-    // Index Status
-    QWidget* indexStatus = new QWidget(m_titleBarWidget);
-    QHBoxLayout* indexL = new QHBoxLayout(indexStatus);
-    indexL->setContentsMargins(0, 0, 0, 0);
-    indexL->setSpacing(6);
-
-    QWidget* dot = new QWidget(indexStatus);
-    dot->setFixedSize(6, 6);
-    dot->setStyleSheet("background: #2ecc71; border-radius: 3px;");
-    indexL->addWidget(dot);
-
-    QLabel* statusText = new QLabel("索引就绪", indexStatus);
-    statusText->setStyleSheet("color: #3d5060; font-size: 11px;");
-    indexL->addWidget(statusText);
-    m_titleBarLayout->addWidget(indexStatus);
-
-    // --- 2. 盘符选择栏 (第二行) ---
-    initDriveBar();
-    mainL->addWidget(m_titleBarWidget);
-    mainL->addWidget(m_driveBarWidget);
-
-    // --- 3. 搜索与路径栏 (第三行) ---
+    // --- 2. 统一导航栏 (第二行) ---
     m_navBarWidget = new QWidget(centralC);
-    m_navBarWidget->setFixedHeight(46);
-    m_navBarWidget->setStyleSheet("background-color: #0d1014; border-bottom: 1px solid #1e252c;");
+    m_navBarWidget->setFixedHeight(37); // 32px 内容 + 5px 上边距
+    m_navBarWidget->setStyleSheet("background: transparent; border: none;");
     
     m_navBarLayout = new QHBoxLayout(m_navBarWidget);
-    m_navBarLayout->setContentsMargins(16, 0, 16, 0);
-    m_navBarLayout->setSpacing(10);
+    // 2026-03-xx 物理对齐：实现上下 5px 呼吸感，上边距由本布局提供，下边距由 bodyLayout 提供
+    m_navBarLayout->setContentsMargins(5, 5, 5, 0);
+    m_navBarLayout->setSpacing(5);
     m_navBarLayout->setAlignment(Qt::AlignVCenter);
 
     m_navBarLayout->addWidget(m_btnBack);
     m_navBarLayout->addWidget(m_btnForward);
     m_navBarLayout->addWidget(m_btnUp);
-    m_navBarLayout->addWidget(m_searchContainer, 1);
+    m_navBarLayout->addWidget(m_pathStack, 1);
+    m_navBarLayout->addWidget(m_searchContainer);
 
-    mainL->addWidget(m_navBarWidget);
-
-    // --- 4. 主体核心容器 (直角平铺) ---
+    // --- 3. 主体核心容器 (物理还原：5px 全局边距包裹) ---
     QWidget* bodyWrapper = new QWidget(centralC);
-    bodyWrapper->setStyleSheet("background: transparent;");
+    bodyWrapper->setStyleSheet("background: transparent;"); // 确保背景透明不遮挡阴影
     QVBoxLayout* bodyLayout = new QVBoxLayout(bodyWrapper);
-    bodyLayout->setContentsMargins(0, 0, 0, 0);
+    bodyLayout->setContentsMargins(5, 5, 5, 5); // 物理还原：5px 呼吸感
     bodyLayout->setSpacing(0);
 
+    // --- 3. 主拆分条 (物理还原：5px 物理缝隙) ---
     m_mainSplitter = new QSplitter(Qt::Horizontal, bodyWrapper);
-    m_mainSplitter->setHandleWidth(1);
+    m_mainSplitter->setHandleWidth(5);
     m_mainSplitter->setChildrenCollapsible(false);
-    m_mainSplitter->setStyleSheet("QSplitter::handle { background: #1e252c; }");
+    // 物理还原：严禁脑补，背景完全透明，依靠容器边框实现视觉缝隙
+    m_mainSplitter->setStyleSheet("QSplitter { background: transparent; border: none; } QSplitter::handle { background: transparent; }");
 
     m_categoryPanel = new CategoryPanel(this);
     m_categoryPanel->setObjectName("SidebarContainer");
@@ -985,34 +865,65 @@ void MainWindow::setupSplitters() {
     m_mainSplitter->addWidget(m_filterPanel);
 
     bodyLayout->addWidget(m_mainSplitter);
-    mainL->addWidget(bodyWrapper, 1);
 
-    // --- 5. 底部状态栏 ---
+    // --- 4. 底部状态栏 (0 边距) ---
     QWidget* statusBar = new QWidget(centralC);
-    statusBar->setFixedHeight(26);
-    statusBar->setStyleSheet("QWidget { background-color: #0d1014; border-top: 1px solid #1e252c; }");
+    statusBar->setFixedHeight(28);
+    statusBar->setStyleSheet("QWidget { background-color: #252525; border-top: 1px solid #333333; }");
     QHBoxLayout* statusL = new QHBoxLayout(statusBar);
-    statusL->setContentsMargins(16, 0, 16, 0);
-    statusL->setSpacing(20);
+    statusL->setContentsMargins(12, 0, 12, 0);
+    statusL->setSpacing(0);
 
-    m_statusLeft = new QLabel("结果 —", statusBar);
-    m_statusLeft->setStyleSheet("font-size: 10px; color: #3d5060; text-transform: uppercase;");
+    m_statusLeft = new QLabel("就绪中...", statusBar);
+    m_statusLeft->setStyleSheet("font-size: 11px; color: #B0B0B0; background: transparent;");
 
-    m_statusCenter = new QLabel("耗时 —", statusBar);
-    m_statusCenter->setStyleSheet("font-size: 10px; color: #3d5060; text-transform: uppercase;");
+    // 2026-05-24 按照用户要求：在 UI 中添加手动“重新扫描”入口
+    QPushButton* btnRescan = new QPushButton(statusBar);
+    btnRescan->setFixedSize(20, 20);
+    btnRescan->setIcon(UiHelper::getIcon("layers", QColor("#B0B0B0"))); // 复用 layers 图标表示对账
+    btnRescan->setIconSize(QSize(14, 14));
+    btnRescan->setFlat(true);
+    btnRescan->setStyleSheet("QPushButton { border: none; background: transparent; } QPushButton:hover { background: rgba(255,255,255,0.1); border-radius: 2px; }");
+    btnRescan->setProperty("tooltipText", "手动全量扫描与对账");
+    btnRescan->installEventFilter(this);
+    connect(btnRescan, &QPushButton::clicked, []() {
+        (void)QtConcurrent::run([]() {
+            SyncEngine::instance().runFullScan({}, nullptr);
+        });
+    });
 
-    m_statusRight = new QLabel("盘符 C:", statusBar);
-    m_statusRight->setStyleSheet("font-size: 10px; color: #3d5060; text-transform: uppercase;");
+    // 绑定 CoreController 状态到状态栏
+    auto updateStatus = [this](const QString& text) {
+        m_statusLeft->setText(text);
+        if (CoreController::instance().isIndexing()) {
+            m_statusLeft->setStyleSheet("font-size: 11px; color: #4FACFE; background: transparent; font-weight: bold;");
+        } else {
+            m_statusLeft->setStyleSheet("font-size: 11px; color: #B0B0B0; background: transparent;");
+        }
+    };
+    connect(&CoreController::instance(), &CoreController::statusTextChanged, this, updateStatus);
+    connect(&CoreController::instance(), &CoreController::isIndexingChanged, this, [this, updateStatus]() {
+        updateStatus(CoreController::instance().statusText());
+    });
+    updateStatus(CoreController::instance().statusText());
+
+    m_statusCenter = new QLabel("", statusBar);
+    m_statusCenter->setAlignment(Qt::AlignCenter);
+    m_statusCenter->setStyleSheet("font-size: 11px; color: #888888; background: transparent;");
+
+    m_statusRight = new QLabel("", statusBar);
+    m_statusRight->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    m_statusRight->setStyleSheet("font-size: 11px; color: #B0B0B0; background: transparent;");
 
     statusL->addWidget(m_statusLeft);
-    statusL->addWidget(m_statusCenter);
-    statusL->addWidget(m_statusRight);
+    statusL->addWidget(btnRescan);
     statusL->addStretch(1);
+    statusL->addWidget(m_statusCenter, 1);
+    statusL->addWidget(m_statusRight, 1);
 
-    QLabel* versionLabel = new QLabel("FERREX v0.1.0", statusBar);
-    versionLabel->setStyleSheet("font-size: 10px; color: #FF8C00; font-weight: bold;");
-    statusL->addWidget(versionLabel);
-
+    mainL->addWidget(m_titleBarWidget);
+    mainL->addWidget(m_navBarWidget);
+    mainL->addWidget(bodyWrapper, 1);
     mainL->addWidget(statusBar);
 
     setCentralWidget(centralC);
