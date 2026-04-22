@@ -1,0 +1,69 @@
+# 默认忽略所有文件夹
+*/
+
+# 允许上传 resources 和 src 文件夹及其所有内容
+!resources/
+!resources/**
+!src/
+!src/**
+!ArcMeta/
+!ArcMeta/**
+!Template/
+!Template/**
+
+
+# 忽略构建目录
+build/
+build-*/
+target/
+target-*/
+Z 作废/
+Z 作废-*/
+J 禁止上传/
+J 禁止上传-*/
+backups/
+backups-*/
+.vs-*/
+.vs/
+.qtcreator/
+OCR/
+
+# 忽略 Qt Creator 配置
+.qtcreator/
+*.pro.user
+*.qbs.user
+*.creator.user
+*.creator
+*.user
+
+# 忽略临时文件
+*.obj
+*.o
+# *.log
+*.cache
+*.tmp
+*.bak
+*.db
+*.exe
+*.zip
+*.dll
+*.dat
+*.idx
+*.py
+
+# 忽略 CMake 生成内容
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# 忽略 VS 相关
+*.pdb
+*.ilk
+*.idb
+*.suo
+*.ncb
+*.opensdf
+*.sdf
+*.VC.db
+*.VC.opendb
