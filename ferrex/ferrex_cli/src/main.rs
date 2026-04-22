@@ -101,7 +101,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 let searcher = Searcher::new(records, pool);
-                let matches = searcher.search(query);
+                let matches = searcher.search(query, "");
 
                 for &idx in &matches {
                     let full_path = resolve_full_path(&drive_letter, idx, records, pool, &frn_to_idx);
