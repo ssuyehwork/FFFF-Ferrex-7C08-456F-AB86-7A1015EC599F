@@ -71,8 +71,12 @@ fn resolve_full_path(drive: &str, idx: usize, records: &[FileRecord], pool: &[u8
         let rec = &records[i];
         let name = String::from_utf8_lossy(&pool[rec.name_offset as usize..]).split('\0').next().unwrap().to_string();
         parts.push(name);
-        if rec.frn == 5 || rec.parent_frn == 0 { break; }
-        curr = frn_to_idx.get(&rec.parent_frn).copied();
+
+        let c_frn = rec.frn;
+        let p_frn = rec.parent_frn;
+
+        if c_frn == 5 || p_frn == 0 { break; }
+        curr = frn_to_idx.get(&p_frn).copied();
     }
     parts.reverse();
     format!("{}:\\{}", drive, parts.join("\\"))

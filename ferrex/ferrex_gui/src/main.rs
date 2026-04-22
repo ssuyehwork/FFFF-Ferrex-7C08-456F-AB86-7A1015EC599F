@@ -77,7 +77,7 @@ impl eframe::App for FerrexApp {
                     let pool = data.get_string_pool();
                     for &idx in self.results.iter().take(100) {
                         let rec = &records[idx];
-                        let name = String::from_utf8_lossy(&pool[rec.name_offset as usize..]).split('\0').next().unwrap_or("");
+                        let name = String::from_utf8_lossy(&pool[rec.name_offset as usize..]).split('\0').next().unwrap_or("").to_string();
                         ui.horizontal(|ui| {
                             let svg = if (rec.flags & 0x10) != 0 { SVG_FOLDER } else { SVG_FILE };
                             ui.add(egui::Image::from_bytes(if (rec.flags & 0x10) != 0 { "folder.svg" } else { "file.svg" }, svg.as_bytes().to_vec()).fit_to_exact_size(egui::vec2(16.0, 16.0)));
