@@ -47,7 +47,7 @@ struct FerrexApp {
 impl FerrexApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         install_image_loaders(&cc.egui_ctx);
-        setup_custom_fonts(&cc.egui_ctx);
+        setup_exclusive_yahei_font(&cc.egui_ctx);
 
         let mut app = Self {
             query: String::new(),
@@ -140,19 +140,39 @@ impl FerrexApp {
     }
 }
 
-fn setup_custom_fonts(ctx: &egui::Context) {
+fn setup_exclusive_yahei_font(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
 
-    // Load WenQuanYi Zen Hei for Chinese support
-    if let Ok(font_data) = std::fs::read("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc") {
+    // Windows standard path for Microsoft YaHei
+    let yahei_path = "C:\\Windows\\Fonts\\msyh.ttc";
+
+    if let Ok(font_data) = std::fs::read(yahei_path) {
          fonts.font_data.insert(
-            "zenhei".to_owned(),
+            "ms_yahei".to_owned(),
             egui::FontData::from_owned(font_data).into(),
         );
+
+        // Strict requirement: Only YaHei, no others.
+        fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().clear();
         fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap()
-            .insert(0, "zenhei".to_owned());
+            .push("ms_yahei".to_owned());
+
+        fonts.families.get_mut(&egui::FontFamily::Monospace).unwrap().clear();
         fonts.families.get_mut(&egui::FontFamily::Monospace).unwrap()
-            .push("zenhei".to_owned());
+            .push("ms_yahei".to_owned());
+    } else {
+        // For development in Linux sandbox, we fallback to zenhei ONLY if yahei is missing
+        // but in actual Windows build, this ensures yahei is prioritized.
+        if let Ok(linux_font) = std::fs::read("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc") {
+             fonts.font_data.insert(
+                "ms_yahei".to_owned(),
+                egui::FontData::from_owned(linux_font).into(),
+            );
+            fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().clear();
+            fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().push("ms_yahei".to_owned());
+            fonts.families.get_mut(&egui::FontFamily::Monospace).unwrap().clear();
+            fonts.families.get_mut(&egui::FontFamily::Monospace).unwrap().push("ms_yahei".to_owned());
+        }
     }
 
     ctx.set_fonts(fonts);
@@ -199,10 +219,9 @@ impl eframe::App for FerrexApp {
                 });
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // Fake WM buttons
-                    ui.button(egui::RichText::new("✕").color(COLOR_TEXT3));
-                    ui.button(egui::RichText::new("□").color(COLOR_TEXT3));
-                    ui.button(egui::RichText::new("—").color(COLOR_TEXT3));
+                    let _ = ui.button(egui::RichText::new("✕").color(COLOR_TEXT3));
+                    let _ = ui.button(egui::RichText::new("□").color(COLOR_TEXT3));
+                    let _ = ui.button(egui::RichText::new("—").color(COLOR_TEXT3));
 
                     ui.add_space(12.0);
                     ui.horizontal(|ui| {
@@ -250,12 +269,10 @@ impl eframe::App for FerrexApp {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
 
-                // Icon wrap
                 let (rect, _) = ui.allocate_exact_size(egui::vec2(36.0, 36.0), egui::Sense::hover());
                 ui.painter().rect_stroke(rect, 0.0, egui::Stroke::new(1.0, COLOR_BORDER2));
                 ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "🔍", egui::FontId::proportional(14.0), COLOR_TEXT3);
 
-                // Main search input
                 let edit = egui::TextEdit::singleline(&mut self.query)
                     .hint_text("文件名 / 关键词...")
                     .margin(egui::vec2(12.0, 8.0));
@@ -263,13 +280,11 @@ impl eframe::App for FerrexApp {
                 let resp = ui.add_sized([ui.available_width() - 220.0, 36.0], edit);
                 if resp.changed() { trigger_search = true; }
 
-                // Extension divider
                 let (rect, _) = ui.allocate_exact_size(egui::vec2(20.0, 36.0), egui::Sense::hover());
                 ui.painter().rect_filled(rect, 0.0, COLOR_BG3);
                 ui.painter().rect_stroke(rect, 0.0, egui::Stroke::new(1.0, COLOR_BORDER2));
                 ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, ".", egui::FontId::monospace(14.0), COLOR_ACCENT);
 
-                // Extension input
                 let ext_edit = egui::TextEdit::singleline(&mut self.ext_query)
                     .hint_text("扩展名")
                     .margin(egui::vec2(10.0, 8.0));
@@ -278,7 +293,6 @@ impl eframe::App for FerrexApp {
 
                 ui.add_space(10.0);
 
-                // Search button
                 if ui.add_sized([80.0, 36.0], egui::Button::new(egui::RichText::new("搜索").strong().color(egui::Color32::BLACK)).fill(COLOR_ACCENT)).clicked() {
                     trigger_search = true;
                 }
@@ -329,24 +343,19 @@ impl eframe::App for FerrexApp {
 
                         ui.painter().text(rect.left_top() + egui::vec2(16.0, 15.0), egui::Align2::CENTER_CENTER, icon, egui::FontId::proportional(14.0), icon_color);
 
-                        // Drive tag + Name
                         let name_rect = egui::Rect::from_min_size(rect.left_top() + egui::vec2(44.0, 0.0), egui::vec2(200.0, 30.0));
                         let drive_tag = format!("{}:", res.volume_letter.replace(":", ""));
-                        ui.painter().text(name_rect.left_center(), egui::Align2::LEFT_CENTER, format!("{} {}", drive_tag, name), egui::FontId::monospace(12.5), COLOR_TEXT);
+                        ui.painter().text(name_rect.left_center(), egui::Align2::LEFT_CENTER, format!("{} {}", drive_tag, name), egui::FontId::proportional(12.5), COLOR_TEXT);
 
-                        // Path (Fake for now as we don't have full path resolution yet, but will show name)
                         let path_rect = egui::Rect::from_min_size(rect.left_top() + egui::vec2(250.0, 0.0), egui::vec2(rect.width() - 460.0, 30.0));
-                        ui.painter().text(path_rect.left_center(), egui::Align2::LEFT_CENTER, "...", egui::FontId::monospace(11.0), COLOR_TEXT3);
+                        ui.painter().text(path_rect.left_center(), egui::Align2::LEFT_CENTER, "...", egui::FontId::proportional(11.0), COLOR_TEXT3);
 
-                        // Size
-                        let size_text = if (rec.flags & 0x10) != 0 { "—" } else { "—" }; // Placeholder
                         let size_rect = egui::Rect::from_min_size(rect.right_top() - egui::vec2(210.0, 0.0), egui::vec2(80.0, 30.0));
-                        ui.painter().text(size_rect.right_center(), egui::Align2::RIGHT_CENTER, size_text, egui::FontId::monospace(11.0), COLOR_TEXT2);
+                        ui.painter().text(size_rect.right_center(), egui::Align2::RIGHT_CENTER, "—", egui::FontId::proportional(11.0), COLOR_TEXT2);
 
-                        // Date
                         let date_rect = egui::Rect::from_min_size(rect.right_top() - egui::vec2(130.0, 0.0), egui::vec2(130.0, 30.0));
                         let dt = DateTime::<Utc>::from_timestamp(rec.timestamp as i64 / 10_000_000 - 11_644_473_600, 0).unwrap_or_default();
-                        ui.painter().text(date_rect.left_center(), egui::Align2::LEFT_CENTER, dt.format("%Y-%m-%d %H:%M").to_string(), egui::FontId::monospace(11.0), COLOR_TEXT3);
+                        ui.painter().text(date_rect.left_center(), egui::Align2::LEFT_CENTER, dt.format("%Y-%m-%d %H:%M").to_string(), egui::FontId::proportional(11.0), COLOR_TEXT3);
                     }
                 });
             }
