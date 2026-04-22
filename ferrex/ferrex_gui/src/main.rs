@@ -22,7 +22,15 @@ struct FerrexApp {
 impl FerrexApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         install_image_loaders(&cc.egui_ctx);
+
         let mut fonts = egui::FontDefinitions::default();
+        // 嵌入微软雅黑字体
+        fonts.font_data.insert(
+            "msyh".to_owned(),
+            egui::FontData::from_static(include_bytes!("../../resources/msyh.ttc")),
+        );
+        fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().insert(0, "msyh".to_owned());
+        fonts.families.get_mut(&egui::FontFamily::Monospace).unwrap().push("msyh".to_owned());
         cc.egui_ctx.set_fonts(fonts);
 
         let mut app = Self {
