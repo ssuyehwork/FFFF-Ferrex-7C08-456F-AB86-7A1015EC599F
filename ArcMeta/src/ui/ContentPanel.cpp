@@ -704,13 +704,15 @@ void ContentPanel::initListView() {
     m_treeView->viewport()->installEventFilter(this);
 
     m_treeView->setStyleSheet(
-        "QTreeView { background-color: transparent; border: none; outline: none; font-size: 12px; }"
-        "QTreeView::item { height: 28px; color: #EEEEEE; padding-left: 0px; }"
-        "QTreeView QLineEdit { background-color: #2D2D2D; color: #FFFFFF; border: 1px solid #378ADD; border-radius: 6px; padding: 2px; selection-background-color: #378ADD; selection-color: #FFFFFF; }"
+        "QTreeView { background-color: transparent; border: none; outline: none; font-size: 12.5px; }"
+        "QTreeView::item { height: 30px; border-bottom: 1px solid rgba(30,37,44,0.5); color: #c8d4dc; border-left: 3px solid transparent; }"
+        "QTreeView::item:hover { background-color: #111519; border-left-color: #FF8C00; }"
+        "QTreeView::item:selected { background-color: #161b20; color: #FF8C00; border-left-color: #FF8C00; }"
+        "QTreeView QLineEdit { background-color: #111519; color: #c8d4dc; border: 1px solid #FF8C00; border-radius: 0px; padding: 2px; }"
     );
 
     m_treeView->header()->setStyleSheet(
-        "QHeaderView::section { background-color: #252525; color: #B0B0B0; padding-left: 10px; border: none; height: 32px; font-size: 11px; }"
+        "QHeaderView::section { background-color: #0d1014; color: #3d5060; padding-left: 16px; border: none; border-bottom: 1px solid #1e252c; height: 30px; font-size: 10px; font-weight: 600; text-transform: uppercase; }"
     );
 
     connect(m_treeView->selectionModel(), &QItemSelectionModel::selectionChanged, this, &ContentPanel::onSelectionChanged);
