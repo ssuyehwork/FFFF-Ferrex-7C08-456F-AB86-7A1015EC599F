@@ -1,0 +1,9 @@
+<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<bridgedata version='1'>
+	<labels version='1'>
+		<item key='UI设计参考' label='已批准'/>
+	</labels>
+	<ratings version='1'>
+		<item key='UI设计参考' rating='1'/>
+	</ratings>
+</bridgedata>
