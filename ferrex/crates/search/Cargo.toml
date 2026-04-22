@@ -1,0 +1,9 @@
+[package]
+name = "search"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+storage = { path = "../storage" }
+memchr = "2.7"
+rayon = "1.10"
