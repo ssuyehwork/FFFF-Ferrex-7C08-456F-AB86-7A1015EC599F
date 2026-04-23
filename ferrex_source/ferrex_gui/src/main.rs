@@ -461,7 +461,7 @@ impl eframe::App for FerrexApp {
                         // Make the title bar draggable
                         let response = ui.interact(ui.max_rect(), Id::new("title_bar_drag"), Sense::drag());
                         if response.dragged() {
-                            ui.ctx().send_viewport_cmd(ViewportCommand::StartWindowDrag);
+                        ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
                         }
                         self.draw_titlebar(ui);
                     });
@@ -899,6 +899,7 @@ fn set_startup(enabled: bool) {
 
 fn setup_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
+    #[allow(unused_mut)]
     let mut msyh_loaded = false;
 
     #[cfg(windows)]
