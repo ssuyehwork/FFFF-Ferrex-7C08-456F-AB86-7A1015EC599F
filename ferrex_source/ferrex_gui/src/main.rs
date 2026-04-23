@@ -607,10 +607,9 @@ impl FerrexApp {
 
     fn update_stats(&mut self) {
         if self.last_sys_poll.elapsed() >= Duration::from_secs(2) {
-            self.sysinfo.refresh_memory();
             self.sysinfo.refresh_all();
             self.mem_usage_mb = self.sysinfo.used_memory() as f32 / 1024.0 / 1024.0;
-            self.cpu_usage = self.sysinfo.global_cpu_usage();
+            self.cpu_usage = self.sysinfo.global_cpu_info().cpu_usage();
             self.last_sys_poll = Instant::now();
         }
     }
