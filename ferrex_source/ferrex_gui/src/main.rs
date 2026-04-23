@@ -370,18 +370,11 @@ impl eframe::App for FerrexApp {
                         let angle = std::f32::consts::PI / 180.0 * (60.0 * i as f32 - 30.0);
                         egui::pos2(center.x + r * angle.cos(), center.y + r * angle.sin())
                     }).collect();
-                    // Draw Precise Geometric Logo (还原原图复杂结构)
-                    let line_stroke = egui::Stroke::new(1.2, ACCENT);
-                    painter.add(egui::Shape::closed_line(points.clone(), line_stroke));
-
-                    // 1. 绘制所有 6 条半径 (中心到顶点)
+                    // Draw Accurate Logo (仅保留外部六边形和 6 条半径线，彻底移除脑补三角形)
+                    painter.add(egui::Shape::closed_line(points.clone(), egui::Stroke::new(1.5, ACCENT)));
                     for i in 0..6 {
-                        painter.line_segment([center, points[i]], line_stroke);
+                        painter.line_segment([center, points[i]], egui::Stroke::new(1.0, ACCENT.gamma_multiply(0.6)));
                     }
-
-                    // 2. 绘制两个交错的三角形 (还原星形/多维感)
-                    painter.add(egui::Shape::closed_line(vec![points[0], points[2], points[4]], line_stroke));
-                    painter.add(egui::Shape::closed_line(vec![points[1], points[3], points[5]], line_stroke));
 
                     ui.add_space(8.0);
                     ui.label(RichText::new("FERREX").color(ACCENT).size(22.0).strong().extra_letter_spacing(0.5));
