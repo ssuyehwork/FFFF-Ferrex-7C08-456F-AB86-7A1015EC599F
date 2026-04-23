@@ -86,7 +86,7 @@ impl IconCache {
             if shfi.hIcon.is_invalid() { return None; }
 
             let mut icon_info = windows::Win32::UI::WindowsAndMessaging::ICONINFO::default();
-            if !GetIconInfo(shfi.hIcon, &mut icon_info).as_bool() {
+            if GetIconInfo(shfi.hIcon, &mut icon_info).is_err() {
                 let _ = DestroyIcon(shfi.hIcon);
                 return None;
             }
@@ -749,7 +749,7 @@ impl FerrexApp {
     fn handle_hotkey(&self, ctx: &egui::Context) {
         unsafe {
             let mut msg = MSG::default();
-            while PeekMessageW(&mut msg, HWND(0), WM_HOTKEY, WM_HOTKEY, PM_REMOVE).as_bool() {
+            while PeekMessageW(&mut msg, HWND(0), WM_HOTKEY, WM_HOTKEY, PM_REMOVE).is_ok() {
                 if msg.wParam.0 == 1001 {
                     ctx.send_viewport_cmd(ViewportCommand::Focus);
                     ctx.send_viewport_cmd(ViewportCommand::Visible(true));
