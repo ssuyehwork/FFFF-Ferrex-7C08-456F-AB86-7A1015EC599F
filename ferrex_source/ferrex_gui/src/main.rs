@@ -69,7 +69,8 @@ impl IconCache {
         #[cfg(windows)]
         unsafe {
             use windows::core::HSTRING;
-            use windows::Win32::Graphics::Gdi::{DestroyIcon, GetIconInfo, GetDIBits, BITMAPINFO, DIB_RGB_COLORS, GetDC, ReleaseDC, DeleteObject};
+            use windows::Win32::Graphics::Gdi::{GetDIBits, BITMAPINFO, DIB_RGB_COLORS, GetDC, ReleaseDC, DeleteObject};
+            use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo};
             let mut shfi = SHFILEINFOW::default();
             let flags = SHGFI_ICON | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES;
             let attr = if is_dir { windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY.0 } else { windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL.0 };
@@ -887,7 +888,7 @@ fn set_startup(enabled: bool) {
 
 fn setup_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
-    let msyh_loaded = false;
+    let mut msyh_loaded = false;
 
     #[cfg(windows)]
     if let Ok(font_bytes) = std::fs::read("C:\\Windows\\Fonts\\msyh.ttc") {
