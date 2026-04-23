@@ -20,6 +20,14 @@
 
 ---
 
+## 重要补充说明（用户最新指令）
+
+1. **字体要求**：后期特意要求修改为 **微软雅黑** (Microsoft YaHei)，无需使用 JetBrains Mono 或 Barlow Condensed。
+2. **图标要求**：支持使用 **Windows 系统图标 API** (SHGetFileInfoW)，无需使用 SVG 图标池。
+3. **优先级**：以上两条补充指令优先级最高，覆盖下文中关于 SVG 和 字体 的旧有描述。
+
+---
+
 ## 第二部分：UI 提示词（交给 Jules 实现）
 
 ```

@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use eframe::egui;
-use egui::{Color32, TextureHandle, ColorImage};
+use egui::{Color32, TextureHandle, ColorImage, RichText, FontId};
 use indexer::{acquire_privileges, get_ntfs_volumes, MftScanner};
 use storage::{IndexStore, MappedIndex};
 use search::Searcher;
@@ -18,13 +18,15 @@ use windows::{
     Win32::Graphics::Gdi::*,
     Win32::UI::WindowsAndMessaging::*,
     Win32::Storage::FileSystem::*,
+    Win32::Foundation::*,
 };
 
-// --- Colors from AGENTS-2.md ---
-const PANEL: Color32 = Color32::from_rgb(13, 16, 20);
+// --- Exact Color Palette from AGENTS-2.md ---
 const BG: Color32 = Color32::from_rgb(7, 9, 11);
+const PANEL: Color32 = Color32::from_rgb(13, 16, 20);
 const BG2: Color32 = Color32::from_rgb(17, 21, 25);
 const BG3: Color32 = Color32::from_rgb(22, 27, 32);
+const BORDER: Color32 = Color32::from_rgb(30, 37, 44);
 const BORDER2: Color32 = Color32::from_rgb(37, 46, 55);
 const ACCENT: Color32 = Color32::from_rgb(255, 140, 0);
 const TEXT: Color32 = Color32::from_rgb(200, 212, 220);
@@ -33,7 +35,7 @@ const TEXT3: Color32 = Color32::from_rgb(61, 80, 96);
 const SUCCESS: Color32 = Color32::from_rgb(46, 204, 113);
 const DANGER: Color32 = Color32::from_rgb(231, 76, 60);
 
-/// Icon Cache Pool for Windows Native Icons
+/// Icon Cache Pool using Windows Native Icons
 struct IconCache {
     textures: HashMap<String, TextureHandle>,
 }
@@ -155,7 +157,7 @@ struct SearchResult {
     name: String,
     full_path: String,
     size: u64,
-    _timestamp: u64,
+    timestamp: u64,
     is_dir: bool,
 }
 
@@ -165,7 +167,6 @@ struct FerrexApp {
     results: Vec<SearchResult>,
     stores: Vec<(String, Arc<IndexStore>)>,
     active_drives: HashSet<String>,
-    status_text: String,
     total_records: usize,
     last_search_ms: f64,
     icons: IconCache,
@@ -202,7 +203,6 @@ impl FerrexApp {
             results: Vec::new(),
             stores: Vec::new(),
             active_drives: HashSet::new(),
-            status_text: "正在初始化系统...".to_string(),
             total_records: 0,
             last_search_ms: 0.0,
             icons: IconCache::new(),
@@ -229,17 +229,16 @@ impl FerrexApp {
                 for line in text.lines().skip(1) {
                     let id = line.trim();
                     if !id.is_empty() && whitelist.iter().any(|&w| w.eq_ignore_ascii_case(id)) {
-                        return true;
+                        return true; // Match found!
                     }
                 }
             }
         }
-        false 
+        false // No match found in any WMIC output
     }
 
     fn load_or_build_all_indices(&mut self) {
         if let Err(_) = acquire_privileges() {
-            self.status_text = "权限不足，请确认以管理员身份运行。".to_string();
             return;
         }
         let volumes = get_ntfs_volumes();
@@ -292,7 +291,6 @@ impl FerrexApp {
                 self.total_records += count;
             }
         }
-        self.status_text = if self.stores.is_empty() { "未发现可用驱动器".to_string() } else { format!("就绪 - {} 卷", self.stores.len()) };
     }
 
     fn run_search(&mut self) {
@@ -316,7 +314,7 @@ impl FerrexApp {
                     name: name.clone(),
                     full_path: format!("{}:\\{}", drive, path),
                     size: store.sizes[idx],
-                    _timestamp: store.timestamps[idx],
+                    timestamp: store.timestamps[idx],
                     is_dir: (store.flags[idx] & 0x10) != 0,
                 });
             }
@@ -331,30 +329,39 @@ impl eframe::App for FerrexApp {
         let mut visuals = egui::Visuals::dark();
         visuals.override_text_color = Some(TEXT);
         visuals.widgets.noninteractive.bg_fill = BG;
+        visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, BORDER);
         ctx.set_visuals(visuals);
 
+        // Hardware unauthorized screen
         if !self.hardware_ok {
-            egui::CentralPanel::default().show(ctx, |ui| {
+            egui::CentralPanel::default().frame(egui::Frame::none().fill(BG)).show(ctx, |ui| {
                 ui.centered_and_justified(|ui| {
                     ui.vertical_centered(|ui| {
                         let (rect, _) = ui.allocate_exact_size(egui::vec2(48.0, 48.0), egui::Sense::hover());
                         let painter = ui.painter();
                         let c = rect.center();
+                        // Draw a red lock icon using painter
+                        painter.rect_filled(egui::Rect::from_center_size(egui::pos2(c.x, c.y + 4.0), egui::vec2(24.0, 18.0)), 0.0, DANGER);
                         painter.rect_stroke(egui::Rect::from_center_size(egui::pos2(c.x, c.y + 4.0), egui::vec2(24.0, 18.0)), 2.0, egui::Stroke::new(2.0, DANGER));
                         painter.circle_stroke(egui::pos2(c.x, c.y - 4.0), 8.0, egui::Stroke::new(2.0, DANGER));
-                        ui.add_space(16.0);
-                        ui.heading(egui::RichText::new("未授权的硬件设备").color(DANGER));
-                        ui.label(egui::RichText::new("请联系开发者").color(TEXT3));
+
+                        ui.add_space(20.0);
+                        ui.label(RichText::new("未授权的硬件设备").color(DANGER).font(FontId::proportional(20.0)).strong());
+                        ui.add_space(8.0);
+                        ui.label(RichText::new("请联系开发者").color(TEXT3).font(FontId::proportional(14.0)));
                     });
                 });
             });
             return;
         }
 
-        // 1. TITLEBAR
-        egui::TopBottomPanel::top("titlebar").exact_height(44.0).frame(egui::Frame::none().fill(PANEL).inner_margin(egui::Margin::symmetric(16.0, 0.0)))
+        // 1. TITLEBAR (height: 44px)
+        egui::TopBottomPanel::top("titlebar")
+            .exact_height(44.0)
+            .frame(egui::Frame::none().fill(PANEL).inner_margin(egui::Margin::symmetric(16.0, 0.0)))
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
+                    // Hexagon logo
                     let (rect, _) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::hover());
                     let painter = ui.painter();
                     let center = rect.center();
@@ -363,49 +370,72 @@ impl eframe::App for FerrexApp {
                         let angle = std::f32::consts::PI / 180.0 * (60.0 * i as f32 - 30.0);
                         egui::pos2(center.x + r * angle.cos(), center.y + r * angle.sin())
                     }).collect();
-                    // Draw Cube Hexagon
-                    painter.add(egui::Shape::closed_line(points.clone(), egui::Stroke::new(1.5, ACCENT)));
-                    for i in 0..6 {
-                        painter.line_segment([center, points[i]], egui::Stroke::new(1.0, ACCENT.gamma_multiply(0.6)));
-                    }
+                    painter.add(egui::Shape::closed_line(points, egui::Stroke::new(1.5, ACCENT)));
 
                     ui.add_space(8.0);
-                    ui.label(egui::RichText::new("FERREX").color(ACCENT).strong().extra_letter_spacing(2.5).size(18.0));
+                    ui.label(RichText::new("FERREX").color(ACCENT).size(18.0).strong().extra_letter_spacing(2.5));
+
                     ui.add_space(14.0);
-                    ui.label(egui::RichText::new("NTFS INDEXER").size(10.0).color(TEXT3));
+                    ui.label(RichText::new("NTFS INDEXER").color(TEXT3).size(10.0));
+
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
-                        ui.painter().circle_filled(dot_rect.center(), 4.0, if self.total_records > 0 { SUCCESS } else { TEXT3 });
-                        ui.label(egui::RichText::new(format!("索引就绪 — {} 条记录", format_number(self.total_records))).size(10.0).color(TEXT3));
+                        let dot_color = if self.total_records > 0 { SUCCESS } else { TEXT3 };
+                        ui.colored_label(dot_color, "●");
+                        ui.add_space(4.0);
+                        ui.label(RichText::new(format!("索引就绪 — {} 条记录", format_number(self.total_records)))
+                            .color(TEXT3).size(10.0));
                     });
                 });
             });
 
-        // 2. DRIVE SELECTOR
-        egui::TopBottomPanel::top("drives").exact_height(40.0).frame(egui::Frame::none().fill(BG2).inner_margin(egui::Margin::symmetric(16.0, 0.0)))
+        // Separator
+        egui::TopBottomPanel::top("sep1").exact_height(1.0).frame(egui::Frame::none().fill(BORDER)).show(ctx, |_| {});
+
+        // 2. DRIVE SELECTOR (height: 40px)
+        egui::TopBottomPanel::top("drives")
+            .exact_height(40.0)
+            .frame(egui::Frame::none().fill(BG2).inner_margin(egui::Margin::symmetric(16.0, 0.0)))
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
-                    ui.label(egui::RichText::new("DRIVES").size(10.0).color(TEXT3));
+                    ui.label(RichText::new("DRIVES").color(TEXT3).size(10.0));
                     ui.add_space(8.0);
-                    let mut toggled_drive = None;
+
+                    let mut clicked_drive = None;
                     for (drive, store) in &self.stores {
                         let is_active = self.active_drives.contains(drive);
-                        let (bg, stroke, text_color) = if is_active { (Color32::from_rgba_unmultiplied(255, 140, 0, 30), ACCENT, ACCENT) } else { (BG3, BORDER2, TEXT2) };
-                        
-                        let label = format!("{}  {}", drive, format_count(store.frns.len()));
-                        let btn = egui::Button::new(egui::RichText::new(label).color(text_color).size(12.0))
-                            .fill(bg).stroke(egui::Stroke::new(1.0, stroke)).rounding(0.0);
-                            
+                        let count_str = format_count(store.frns.len());
+                        let label = format!("{}:  {}", drive, count_str);
+
+                        let (bg, stroke_color, text_color) = if is_active {
+                            (Color32::from_rgba_unmultiplied(255, 140, 0, 30), ACCENT, ACCENT)
+                        } else {
+                            (BG3, BORDER2, TEXT2)
+                        };
+
+                        let btn = egui::Button::new(RichText::new(&label).color(text_color).size(12.0))
+                            .fill(bg)
+                            .stroke(egui::Stroke::new(1.0, stroke_color))
+                            .rounding(0.0);
+
                         if ui.add(btn).clicked() {
-                            toggled_drive = Some((drive.clone(), is_active));
+                            clicked_drive = Some((drive.clone(), is_active));
                         }
                         ui.add_space(4.0);
                     }
-                    
+
+                    if let Some((drive, is_active)) = clicked_drive {
+                        if is_active && self.active_drives.len() > 1 {
+                            self.active_drives.remove(&drive);
+                        } else if !is_active {
+                            self.active_drives.insert(drive);
+                        }
+                        self.run_search();
+                    }
+
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let all_active = self.active_drives.len() == self.stores.len();
                         let label = if all_active { "全清" } else { "全选" };
-                        if ui.add(egui::Button::new(egui::RichText::new(label).size(10.0).color(TEXT3)).frame(false)).clicked() {
+                        if ui.add(egui::Button::new(RichText::new(label).color(TEXT3).size(10.0)).frame(false)).clicked() {
                             if all_active && self.stores.len() > 1 {
                                 let first = self.stores[0].0.clone();
                                 self.active_drives = HashSet::from([first]);
@@ -415,85 +445,113 @@ impl eframe::App for FerrexApp {
                             self.run_search();
                         }
                     });
-
-                    if let Some((drive, was_active)) = toggled_drive {
-                        if was_active && self.active_drives.len() > 1 { self.active_drives.remove(&drive); }
-                        else if !was_active { self.active_drives.insert(drive); }
-                        self.run_search();
-                    }
                 });
             });
 
-        // 3. SEARCH BAR
-        egui::TopBottomPanel::top("searchbar").exact_height(46.0).frame(egui::Frame::none().fill(PANEL).inner_margin(egui::Margin::symmetric(16.0, 5.0)))
+        egui::TopBottomPanel::top("sep2").exact_height(1.0).frame(egui::Frame::none().fill(BORDER)).show(ctx, |_| {});
+
+        // 3. SEARCH BAR (height: 46px)
+        egui::TopBottomPanel::top("searchbar")
+            .exact_height(46.0)
+            .frame(egui::Frame::none().fill(PANEL).inner_margin(egui::Margin::symmetric(16.0, 5.0)))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
+
+                    // Search icon placeholder
                     let (icon_rect, _) = ui.allocate_exact_size(egui::vec2(36.0, 36.0), egui::Sense::hover());
                     ui.painter().rect_filled(icon_rect, 0.0, BG2);
                     ui.painter().rect_stroke(icon_rect, 0.0, egui::Stroke::new(1.0, BORDER2));
                     let c = icon_rect.center();
                     ui.painter().circle_stroke(egui::pos2(c.x-2.0, c.y-2.0), 5.5, egui::Stroke::new(1.5, TEXT3));
                     ui.painter().line_segment([egui::pos2(c.x+2.0, c.y+2.0), egui::pos2(c.x+6.0, c.y+6.0)], egui::Stroke::new(1.5, TEXT3));
-                    
-                    let search_res = ui.add_sized(egui::vec2(ui.available_width() - 184.0, 36.0), 
+
+                    // Filename input
+                    let search_res = ui.add_sized(
+                        egui::vec2(ui.available_width() - 184.0, 36.0),
                         egui::TextEdit::singleline(&mut self.query)
-                            .hint_text("文件名 / 关键词...")
+                            .hint_text(RichText::new("文件名 / 关键词...").color(TEXT3))
                             .frame(true)
-                            .margin(egui::vec2(8.0, 8.0)));
-                    
+                            .margin(egui::vec2(8.0, 8.0))
+                    );
+
+                    // "." dot separator
                     let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(24.0, 36.0), egui::Sense::hover());
                     ui.painter().rect_filled(dot_rect, 0.0, BG3);
-                    ui.painter().text(dot_rect.center(), egui::Align2::CENTER_CENTER, ".", egui::FontId::monospace(16.0), ACCENT);
-                    
-                    let ext_res = ui.add_sized(egui::vec2(80.0, 36.0), 
+                    ui.painter().text(dot_rect.center(), egui::Align2::CENTER_CENTER, ".", FontId::monospace(16.0), ACCENT);
+
+                    // Extension input
+                    let ext_res = ui.add_sized(
+                        egui::vec2(80.0, 36.0),
                         egui::TextEdit::singleline(&mut self.ext_filter)
-                            .hint_text("扩展名")
+                            .hint_text(RichText::new("扩展名").color(TEXT3))
                             .frame(true)
-                            .margin(egui::vec2(4.0, 8.0)));
-                    
+                            .margin(egui::vec2(4.0, 8.0))
+                    );
+
                     ui.add_space(10.0);
-                    if ui.add(egui::Button::new(egui::RichText::new("搜索").color(Color32::BLACK).strong())
-                        .fill(ACCENT).min_size(egui::vec2(70.0, 36.0)).rounding(0.0)).clicked() || search_res.changed() || ext_res.changed() {
+
+                    // Search button
+                    let btn = egui::Button::new(RichText::new("搜索").color(Color32::BLACK).strong())
+                        .fill(ACCENT)
+                        .rounding(0.0)
+                        .min_size(egui::vec2(70.0, 36.0));
+
+                    if ui.add(btn).clicked() || search_res.changed() || ext_res.changed() {
                         self.run_search();
                     }
                 });
             });
 
-        // 4. COLUMN HEADER
-        egui::TopBottomPanel::top("col_header").exact_height(30.0).frame(egui::Frame::none().fill(BG2).inner_margin(egui::Margin::symmetric(16.0, 0.0)))
+        egui::TopBottomPanel::top("sep3").exact_height(1.0).frame(egui::Frame::none().fill(BORDER)).show(ctx, |_| {});
+
+        // 4. COLUMN HEADER (height: 30px)
+        egui::TopBottomPanel::top("col_header")
+            .exact_height(30.0)
+            .frame(egui::Frame::none().fill(BG2).inner_margin(egui::Margin::symmetric(16.0, 0.0)))
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
-                    ui.add_space(18.0);
-                    ui.label(egui::RichText::new("名称").size(10.0).color(TEXT3).extra_letter_spacing(1.5));
-                    ui.add_space(240.0);
-                    ui.label(egui::RichText::new("路径").size(10.0).color(TEXT3).extra_letter_spacing(1.5));
+                    ui.add_space(20.0); // icon space
+                    ui.label(RichText::new("名称").size(10.0).color(TEXT3).extra_letter_spacing(1.5));
+
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(egui::RichText::new("大小").size(10.0).color(TEXT3).extra_letter_spacing(1.5));
+                        ui.add_space(140.0); // date col
+                        ui.label(RichText::new("大小").size(10.0).color(TEXT3).extra_letter_spacing(1.5));
+                        ui.add_space(100.0); // path offset from right
+                        ui.label(RichText::new("路径").size(10.0).color(TEXT3).extra_letter_spacing(1.5));
                     });
                 });
             });
 
-        // 5. STATUS BAR
-        egui::TopBottomPanel::bottom("statusbar").exact_height(26.0).frame(egui::Frame::none().fill(PANEL).inner_margin(egui::Margin::symmetric(16.0, 0.0)))
+        egui::TopBottomPanel::top("sep4").exact_height(1.0).frame(egui::Frame::none().fill(BORDER)).show(ctx, |_| {});
+
+        // 5. STATUS BAR (height: 26px)
+        egui::TopBottomPanel::bottom("statusbar")
+            .exact_height(26.0)
+            .frame(egui::Frame::none().fill(PANEL).inner_margin(egui::Margin::symmetric(16.0, 0.0)))
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
                     stat_item(ui, "结果", &format_number(self.results.len()));
                     ui.add_space(16.0);
                     stat_item(ui, "耗时", &format!("{:.1} ms", self.last_search_ms));
+                    ui.add_space(16.0);
+                    stat_item(ui, "盘符", &self.active_drives.iter().cloned().collect::<Vec<_>>().join(" "));
+
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(egui::RichText::new("FERREX v0.1.0").color(ACCENT).size(10.0));
+                        ui.label(RichText::new("FERREX v0.1.0").color(ACCENT).size(10.0));
                     });
                 });
             });
+
+        egui::TopBottomPanel::bottom("sep5").exact_height(1.0).frame(egui::Frame::none().fill(BORDER)).show(ctx, |_| {});
 
         // 6. RESULTS LIST
         egui::CentralPanel::default().frame(egui::Frame::none().fill(BG)).show(ctx, |ui| {
             if self.results.is_empty() && !self.query.is_empty() {
                 ui.centered_and_justified(|ui| {
                     ui.vertical_centered(|ui| {
-                        ui.label(egui::RichText::new("无匹配结果").color(TEXT3).size(14.0));
-                        ui.label(egui::RichText::new("尝试更换关键词或扩大盘符范围").color(TEXT3).size(11.0));
+                        ui.label(RichText::new("无匹配结果").color(TEXT3).size(14.0));
+                        ui.label(RichText::new("尝试更换关键词或扩大盘符范围").color(TEXT3).size(11.0));
                     });
                 });
             } else {
@@ -503,21 +561,35 @@ impl eframe::App for FerrexApp {
                         let bg = if i % 2 == 0 { BG } else { BG2 };
                         let frame = egui::Frame::none().fill(bg).inner_margin(egui::Margin::symmetric(16.0, 4.0));
                         
-                        let _response = frame.show(ui, |ui| {
+                        frame.show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 let icon_handle = self.icons.get(ctx, &res.name, res.is_dir);
                                 ui.add(egui::Image::new(icon_handle).fit_to_exact_size(egui::vec2(14.0, 14.0)));
                                 
-                                ui.add(egui::Label::new(egui::RichText::new(format!("{}:", res.drive)).size(9.0).color(TEXT3)).truncate());
-                                ui.add_sized(egui::vec2(240.0, 18.0), egui::Label::new(egui::RichText::new(&res.name).color(TEXT).size(12.5)).truncate());
-                                ui.label(egui::RichText::new(&res.full_path).color(TEXT3).size(11.0));
-                                
+                                ui.add_space(4.0);
+                                // Name with drive tag
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 4.0;
+                                    let (tag_rect, _) = ui.allocate_exact_size(egui::vec2(18.0, 14.0), egui::Sense::hover());
+                                    ui.painter().rect_stroke(tag_rect, 0.0, egui::Stroke::new(1.0, BORDER2));
+                                    ui.painter().text(tag_rect.center(), egui::Align2::CENTER_CENTER, &res.drive, FontId::proportional(9.0), TEXT3);
+
+                                    ui.add_sized(egui::vec2(220.0, 18.0), egui::Label::new(RichText::new(&res.name).color(TEXT).size(12.5)).truncate());
+                                });
+
+                                // Path
+                                ui.add_sized(egui::vec2(ui.available_width() - 220.0, 18.0), egui::Label::new(RichText::new(&res.full_path).color(TEXT3).size(11.0)).truncate());
+
+                                // Size & Date
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    ui.label(egui::RichText::new(format_size(res.size)).color(TEXT2).size(11.0));
+                                    ui.add_space(8.0);
+                                    ui.label(RichText::new(format_timestamp(res.timestamp)).color(TEXT3).size(11.0));
+                                    ui.add_space(16.0);
+                                    ui.label(RichText::new(format_size(res.size)).color(TEXT2).size(11.0));
                                 });
                             });
                         });
-                        ui.separator();
+                        ui.painter().hline(ui.cursor().left()..=ui.cursor().right(), ui.cursor().top(), egui::Stroke::new(1.0, BORDER));
                     }
                 });
             }
@@ -526,9 +598,9 @@ impl eframe::App for FerrexApp {
 }
 
 fn stat_item(ui: &mut egui::Ui, label: &str, value: &str) {
-    ui.label(egui::RichText::new(label).size(10.0).color(TEXT3));
+    ui.label(RichText::new(label).size(10.0).color(TEXT3));
     ui.add_space(4.0);
-    ui.label(egui::RichText::new(value).size(10.0).color(TEXT2).strong());
+    ui.label(RichText::new(value).size(10.0).color(TEXT2).strong());
 }
 
 fn format_number(n: usize) -> String {
@@ -556,6 +628,56 @@ fn format_size(bytes: u64) -> String {
     format!("{:.2} {}", size, UNITS[unit])
 }
 
+/// Converts Windows FILETIME to YYYY-MM-DD HH:MM
+fn format_timestamp(ts: u64) -> String {
+    if ts == 0 { return "—".to_string(); }
+
+    // FILETIME: 100-nanosecond intervals since Jan 1, 1601.
+    // Unix Epoch: Jan 1, 1970 is 11644473600 seconds after Jan 1, 1601.
+    const UNIX_EPOCH_OFFSET: u64 = 11644473600;
+    let seconds_since_1601 = ts / 10_000_000;
+
+    if seconds_since_1601 < UNIX_EPOCH_OFFSET {
+        return "Pre-1970".to_string();
+    }
+
+    let unix_ts = seconds_since_1601 - UNIX_EPOCH_OFFSET;
+
+    // Very basic conversion to avoid extra crates like chrono for now,
+    // but giving a realistic formatted string.
+    let days_since_epoch = unix_ts / 86400;
+    let secs_of_day = unix_ts % 86400;
+    let hour = secs_of_day / 3600;
+    let minute = (secs_of_day % 3600) / 60;
+
+    // Approximate year/month/day calculation
+    let mut year = 1970;
+    let mut days_left = days_since_epoch;
+    loop {
+        let leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+        let days_in_year = if leap { 366 } else { 365 };
+        if days_left < days_in_year { break; }
+        days_left -= days_in_year;
+        year += 1;
+    }
+
+    let month_days = if (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0) {
+        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    } else {
+        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    };
+
+    let mut month = 1;
+    for &d in &month_days {
+        if days_left < d { break; }
+        days_left -= d;
+        month += 1;
+    }
+    let day = days_left + 1;
+
+    format!("{:04}-{:02}-{:02} {:02}:{:02}", year, month, day, hour, minute)
+}
+
 fn pool_get_name(pool: &[u8], offset: usize) -> String {
     if offset >= pool.len() { return String::new(); }
     let slice = &pool[offset..];
@@ -565,7 +687,9 @@ fn pool_get_name(pool: &[u8], offset: usize) -> String {
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([800.0, 600.0]).with_title("Ferrex"),
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([1000.0, 700.0])
+            .with_title("Ferrex Indexer"),
         ..Default::default()
     };
     eframe::run_native("Ferrex", options, Box::new(|cc| Ok(Box::new(FerrexApp::new(cc)))))
