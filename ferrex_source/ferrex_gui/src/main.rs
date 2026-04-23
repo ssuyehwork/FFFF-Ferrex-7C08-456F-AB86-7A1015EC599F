@@ -452,48 +452,66 @@ impl eframe::App for FerrexApp {
         }
 
         egui::CentralPanel::default()
-            .frame(Frame::none().fill(BG).rounding(Rounding::same(8.0)).stroke(Stroke::new(1.0, BORDER2)))
+            .frame(Frame::none()
+                .fill(BG)
+                .rounding(Rounding::same(8.0))
+                .stroke(Stroke::new(1.0, BORDER2)))
             .show(ctx, |ui| {
+                // 自定义标题栏 (顶部带圆角)
                 egui::TopBottomPanel::top("titlebar")
                     .exact_height(34.0)
-                    .frame(Frame::none().fill(PANEL).inner_margin(Margin::symmetric(16.0, 0.0)))
+                    .frame(Frame::none()
+                        .fill(PANEL)
+                        .inner_margin(Margin::symmetric(16.0, 0.0))
+                        .rounding(Rounding { nw: 8.0, ne: 8.0, sw: 0.0, se: 0.0 }))
                     .show_inside(ui, |ui| {
-                        // Make the title bar draggable
                         let response = ui.interact(ui.max_rect(), Id::new("title_bar_drag"), Sense::drag());
                         if response.dragged() {
-                        ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
+                            ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
                         }
                         self.draw_titlebar(ui);
                     });
 
-                egui::TopBottomPanel::top("drives")
-                    .exact_height(40.0)
-                    .frame(Frame::none().fill(BG2).inner_margin(Margin::symmetric(16.0, 0.0)))
-                    .show_inside(ui, |ui| { self.draw_drive_selector(ui, ctx); });
-
-                egui::TopBottomPanel::top("searchbar_area").frame(Frame::none().fill(PANEL)).show_inside(ui, |ui| {
-                    Frame::none().inner_margin(Margin::symmetric(16.0, 5.0)).show(ui, |ui| {
-                        self.draw_search_bar(ui, ctx);
-                        if self.show_filters { ui.add_space(8.0); self.draw_filter_strip(ui, ctx); }
-                    });
-                    if self.is_scanning {
-                        ui.add(egui::ProgressBar::new(self.scan_progress)
-                            .text(RichText::new(&self.status_text).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(ACCENT))
-                            .fill(ACCENT).desired_height(4.0).rounding(Rounding::ZERO));
-                    }
-                });
-
+                // 底部状态栏 (底部带圆角)
                 egui::TopBottomPanel::bottom("statusbar")
                     .exact_height(26.0)
-                    .frame(Frame::none().fill(PANEL).inner_margin(Margin::symmetric(16.0, 0.0)))
+                    .frame(Frame::none()
+                        .fill(PANEL)
+                        .inner_margin(Margin::symmetric(16.0, 0.0))
+                        .rounding(Rounding { nw: 0.0, ne: 0.0, sw: 8.0, se: 8.0 }))
                     .show_inside(ui, |ui| { self.draw_status_bar(ui); });
 
-                egui::CentralPanel::default().frame(Frame::none().fill(BG)).show_inside(ui, |ui| {
-                    self.draw_column_header(ui);
-                    ui.add(egui::Separator::default().spacing(0.0));
-                    self.draw_results_list(ui);
-                    self.draw_hover_preview(ctx);
-                });
+                // 中间内容区域
+                egui::CentralPanel::default()
+                    .frame(Frame::none().fill(BG))
+                    .show_inside(ui, |ui| {
+                        ui.vertical(|ui| {
+                            // 盘符栏
+                            Frame::none().fill(BG2).inner_margin(Margin::symmetric(16.0, 8.0)).show(ui, |ui| {
+                                self.draw_drive_selector(ui, ctx);
+                            });
+
+                            // 搜索栏
+                            Frame::none().fill(PANEL).inner_margin(Margin::symmetric(16.0, 5.0)).show(ui, |ui| {
+                                self.draw_search_bar(ui, ctx);
+                                if self.show_filters { ui.add_space(8.0); self.draw_filter_strip(ui, ctx); }
+                            });
+
+                            if self.is_scanning {
+                                ui.add(egui::ProgressBar::new(self.scan_progress)
+                                    .text(RichText::new(&self.status_text).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(ACCENT))
+                                    .fill(ACCENT).desired_height(4.0).rounding(Rounding::ZERO));
+                            }
+
+                            // 结果列表
+                            ui.add_space(10.0);
+                            self.draw_column_header(ui);
+                            ui.add(egui::Separator::default().spacing(0.0));
+                            self.draw_results_list(ui);
+                        });
+                    });
+
+                self.draw_hover_preview(ctx);
             });
     }
 }
