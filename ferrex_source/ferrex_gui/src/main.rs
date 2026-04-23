@@ -378,7 +378,7 @@ impl eframe::App for FerrexApp {
                     }
 
                     ui.add_space(8.0);
-                    ui.label(RichText::new("FERREX").color(ACCENT).size(18.0).strong().extra_letter_spacing(2.5));
+                    ui.label(RichText::new("FERREX").color(ACCENT).size(20.0).strong().extra_letter_spacing(1.2));
 
                     ui.add_space(14.0);
                     ui.label(RichText::new("NTFS INDEXER").color(TEXT3).size(10.0));
