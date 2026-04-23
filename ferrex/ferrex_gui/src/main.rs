@@ -17,11 +17,10 @@ use windows::{
     Win32::UI::Shell::*,
     Win32::Graphics::Gdi::*,
     Win32::UI::WindowsAndMessaging::*,
-    Win32::Foundation::*,
     Win32::Storage::FileSystem::*,
 };
 
-// --- Colors ---
+// --- Colors from AGENTS-2.md ---
 const PANEL: Color32 = Color32::from_rgb(13, 16, 20);
 const BG: Color32 = Color32::from_rgb(7, 9, 11);
 const BG2: Color32 = Color32::from_rgb(17, 21, 25);
@@ -71,14 +70,17 @@ impl IconCache {
             let mut shfi = SHFILEINFOW::default();
             let flags = SHGFI_ICON | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES;
             let attr = if is_dir { FILE_ATTRIBUTE_DIRECTORY } else { FILE_ATTRIBUTE_NORMAL };
-            let path = if is_dir {
+
+            let path_hstring: HSTRING;
+            let path_ptr = if is_dir {
                 w!("C:\\Windows")
             } else {
-                HSTRING::from(format!("file.{}", extension))
+                path_hstring = HSTRING::from(format!("file.{}", extension));
+                PCWSTR(path_hstring.as_ptr())
             };
 
             SHGetFileInfoW(
-                PCWSTR(path.as_ptr()),
+                path_ptr,
                 attr,
                 Some(&mut shfi),
                 std::mem::size_of::<SHFILEINFOW>() as u32,
@@ -108,7 +110,7 @@ impl IconCache {
 #[cfg(target_os = "windows")]
 unsafe fn hicon_to_color_image(h_icon: HICON) -> ColorImage {
     let mut icon_info = ICONINFO::default();
-    if !GetIconInfo(h_icon, &mut icon_info).as_bool() {
+    if GetIconInfo(h_icon, &mut icon_info).is_err() {
         return ColorImage::new([16, 16], Color32::TRANSPARENT);
     }
 
@@ -120,7 +122,7 @@ unsafe fn hicon_to_color_image(h_icon: HICON) -> ColorImage {
             biHeight: -16,
             biPlanes: 1,
             biBitCount: 32,
-            biCompression: BI_RGB as u32,
+            biCompression: BI_RGB.0,
             ..Default::default()
         },
         ..Default::default()
@@ -175,6 +177,7 @@ impl FerrexApp {
         egui_extras::install_image_loaders(&cc.egui_ctx);
 
         let mut fonts = egui::FontDefinitions::default();
+        // --- IRON RULE: Only Microsoft YaHei font ---
         fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().clear();
         fonts.families.get_mut(&egui::FontFamily::Monospace).unwrap().clear();
 
