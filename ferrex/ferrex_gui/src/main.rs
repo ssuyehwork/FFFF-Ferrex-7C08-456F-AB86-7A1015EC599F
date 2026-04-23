@@ -1,8 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use eframe::egui;
-use egui::Color32;
-use egui_extras::install_image_loaders;
+use egui::{Color32, TextureHandle, ColorImage};
 use indexer::{acquire_privileges, get_ntfs_volumes, MftScanner};
 use storage::{IndexStore, MappedIndex};
 use search::Searcher;
@@ -11,9 +10,20 @@ use std::collections::{HashMap, HashSet};
 use std::process::Command;
 use std::time::Instant;
 
-// --- Colors from AGENTS-2.md ---
-const BG: Color32 = Color32::from_rgb(7, 9, 11);
+// Windows API imports
+#[cfg(target_os = "windows")]
+use windows::{
+    core::*,
+    Win32::UI::Shell::*,
+    Win32::Graphics::Gdi::*,
+    Win32::UI::WindowsAndMessaging::*,
+    Win32::Foundation::*,
+    Win32::Storage::FileSystem::*,
+};
+
+// --- Colors ---
 const PANEL: Color32 = Color32::from_rgb(13, 16, 20);
+const BG: Color32 = Color32::from_rgb(7, 9, 11);
 const BG2: Color32 = Color32::from_rgb(17, 21, 25);
 const BG3: Color32 = Color32::from_rgb(22, 27, 32);
 const BORDER2: Color32 = Color32::from_rgb(37, 46, 55);
@@ -24,48 +34,118 @@ const TEXT3: Color32 = Color32::from_rgb(61, 80, 96);
 const SUCCESS: Color32 = Color32::from_rgb(46, 204, 113);
 const DANGER: Color32 = Color32::from_rgb(231, 76, 60);
 
-// --- Inlined SVG Icons (Phase: Robustness) ---
-// Directly embedding XML to avoid external file dependencies during build.
-const SVG_FILE: &str = r##"<svg viewBox="0 0 16 16" fill="none" stroke="#7A8F9E" stroke-width="1.2" xmlns="http://www.w3.org/2000/svg"><path d="M9 1H4a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V5z" stroke-linejoin="round"/><polyline points="9,1 9,5 13,5" stroke-linejoin="round"/></svg>"##;
-const SVG_FOLDER: &str = r##"<svg viewBox="0 0 16 16" fill="none" stroke="#C96E00" stroke-width="1.2" xmlns="http://www.w3.org/2000/svg"><path d="M1 4a1 1 0 0 1 1-1h4l2 2h6a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1z" stroke-linejoin="round"/></svg>"##;
-const SVG_EXE: &str = r##"<svg viewBox="0 0 16 16" fill="none" stroke="#7A8F9E" stroke-width="1.2" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="12" height="12" rx="1"/><path d="M5 8l2-2 2 2 2-2" stroke-linecap="round"/><line x1="5" y1="11" x2="11" y2="11" stroke-linecap="round"/></svg>"##;
-const SVG_IMAGE: &str = r##"<svg viewBox="0 0 16 16" fill="none" stroke="#7A8F9E" stroke-width="1.2" xmlns="http://www.w3.org/2000/svg"><rect x="1" y="3" width="14" height="10" rx="1"/><circle cx="5.5" cy="6.5" r="1.2" fill="#7A8F9E" stroke="none"/><polyline points="1,11 5,7.5 8,10 11,7 15,11" stroke-linejoin="round"/></svg>"##;
-const SVG_DOC: &str = r##"<svg viewBox="0 0 16 16" fill="none" stroke="#7A8F9E" stroke-width="1.2" xmlns="http://www.w3.org/2000/svg"><path d="M9 1H4a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V5z" stroke-linejoin="round"/><polyline points="9,1 9,5 13,5"/><line x1="5" y1="8" x2="11" y2="8" stroke-linecap="round"/><line x1="5" y1="10.5" x2="11" y2="10.5" stroke-linecap="round"/><line x1="5" y1="13" x2="8" y2="13" stroke-linecap="round"/></svg>"##;
-
+/// Icon Cache Pool for Windows Native Icons
 struct IconCache {
-    map: HashMap<&'static str, egui::ImageSource<'static>>,
+    textures: HashMap<String, TextureHandle>,
 }
 
 impl IconCache {
     fn new() -> Self {
-        let mut map = HashMap::new();
-        let icons = [
-            ("file", SVG_FILE),
-            ("folder", SVG_FOLDER),
-            ("exe", SVG_EXE),
-            ("image", SVG_IMAGE),
-            ("doc", SVG_DOC),
-        ];
-        for (name, svg) in icons {
-            map.insert(name, egui::ImageSource::Bytes {
-                uri: std::borrow::Cow::Owned(format!("bytes://{}.svg", name)),
-                bytes: egui::load::Bytes::Static(svg.as_bytes()),
-            });
+        Self {
+            textures: HashMap::new(),
         }
-        Self { map }
     }
 
-    fn get_for_entry(&self, name: &str, is_dir: bool) -> &egui::ImageSource<'static> {
-        if is_dir { return self.map.get("folder").unwrap(); }
-        let ext = name.rsplit('.').next().unwrap_or("").to_lowercase();
-        match ext.as_str() {
-            "exe" | "dll" | "msi" | "bat" | "cmd" => self.map.get("exe"),
-            "png" | "jpg" | "jpeg" | "gif" | "bmp" | "ico" | "webp" => self.map.get("image"),
-            "doc" | "docx" | "pdf" | "txt" | "md" | "xls" | "xlsx" | "ppt" | "pptx" => self.map.get("doc"),
-            _ => self.map.get("file"),
+    fn get(&mut self, ctx: &egui::Context, name: &str, is_dir: bool) -> &TextureHandle {
+        let key = if is_dir {
+            "__folder__".to_string()
+        } else {
+            name.rsplit('.').next().unwrap_or("").to_lowercase()
+        };
+
+        if !self.textures.contains_key(&key) {
+            let image = self.load_system_icon(&key, is_dir);
+            let handle = ctx.load_texture(
+                format!("icon_{}", key),
+                image,
+                Default::default()
+            );
+            self.textures.insert(key.clone(), handle);
         }
-        .unwrap()
+        self.textures.get(&key).unwrap()
     }
+
+    #[cfg(target_os = "windows")]
+    fn load_system_icon(&self, extension: &str, is_dir: bool) -> ColorImage {
+        unsafe {
+            let mut shfi = SHFILEINFOW::default();
+            let flags = SHGFI_ICON | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES;
+            let attr = if is_dir { FILE_ATTRIBUTE_DIRECTORY } else { FILE_ATTRIBUTE_NORMAL };
+            let path = if is_dir {
+                w!("C:\\Windows")
+            } else {
+                HSTRING::from(format!("file.{}", extension))
+            };
+
+            SHGetFileInfoW(
+                PCWSTR(path.as_ptr()),
+                attr,
+                Some(&mut shfi),
+                std::mem::size_of::<SHFILEINFOW>() as u32,
+                flags,
+            );
+
+            if shfi.hIcon.is_invalid() {
+                return ColorImage::new([16, 16], Color32::TRANSPARENT);
+            }
+
+            let image = hicon_to_color_image(shfi.hIcon);
+            let _ = DestroyIcon(shfi.hIcon);
+            image
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn load_system_icon(&self, _ext: &str, is_dir: bool) -> ColorImage {
+        if is_dir {
+            ColorImage::new([16, 16], Color32::from_rgb(201, 110, 0))
+        } else {
+            ColorImage::new([16, 16], Color32::from_rgb(122, 143, 158))
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn hicon_to_color_image(h_icon: HICON) -> ColorImage {
+    let mut icon_info = ICONINFO::default();
+    if !GetIconInfo(h_icon, &mut icon_info).as_bool() {
+        return ColorImage::new([16, 16], Color32::TRANSPARENT);
+    }
+
+    let h_dc = GetDC(None);
+    let mut bmi = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: 16,
+            biHeight: -16,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB as u32,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let mut pixels = vec![0u8; 16 * 16 * 4];
+    GetDIBits(
+        h_dc,
+        icon_info.hbmColor,
+        0,
+        16,
+        Some(pixels.as_mut_ptr() as *mut _),
+        &mut bmi,
+        DIB_RGB_COLORS,
+    );
+
+    let _ = DeleteObject(icon_info.hbmColor);
+    let _ = DeleteObject(icon_info.hbmMask);
+    let _ = ReleaseDC(None, h_dc);
+
+    for chunk in pixels.chunks_exact_mut(4) {
+        chunk.swap(0, 2);
+    }
+
+    ColorImage::from_rgba_unmultiplied([16, 16], &pixels)
 }
 
 struct SearchResult {
@@ -92,11 +172,9 @@ struct FerrexApp {
 
 impl FerrexApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        install_image_loaders(&cc.egui_ctx);
+        egui_extras::install_image_loaders(&cc.egui_ctx);
 
         let mut fonts = egui::FontDefinitions::default();
-        // --- IRON RULE: Only Microsoft YaHei font ---
-        // Purge all default fonts to enforce the iron rule.
         fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().clear();
         fonts.families.get_mut(&egui::FontFamily::Monospace).unwrap().clear();
 
@@ -185,7 +263,6 @@ impl FerrexApp {
                 store.usn_watermark = mapped.usn_watermark;
                 store.volume_serial = mapped.volume_serial;
             } else {
-                // Out-of-the-box experience: auto-scan if no index found.
                 if let Ok(scanner) = MftScanner::new(&vol) {
                     if let Ok(raw_entries) = scanner.scan() {
                         for entry in raw_entries {
@@ -383,10 +460,13 @@ impl eframe::App for FerrexApp {
                         let bg = if i % 2 == 0 { BG } else { BG2 };
                         egui::Frame::none().fill(bg).show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                ui.add(egui::Image::new(self.icons.get_for_entry(&res.name, res.is_dir).clone()).fit_to_exact_size(egui::vec2(14.0, 14.0)));
+                                let icon_handle = self.icons.get(ctx, &res.name, res.is_dir);
+                                ui.add(egui::Image::new(icon_handle).fit_to_exact_size(egui::vec2(14.0, 14.0)));
+
                                 ui.add(egui::Label::new(egui::RichText::new(format!("{}:", res.drive)).size(9.0).color(TEXT3)).truncate());
                                 ui.add_sized(egui::vec2(200.0, 18.0), egui::Label::new(egui::RichText::new(&res.name).color(TEXT)).truncate());
                                 ui.label(egui::RichText::new(&res.full_path).color(TEXT3).size(11.0));
+
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                     ui.label(egui::RichText::new(format_size(res.size)).color(TEXT2).size(11.0));
                                 });
