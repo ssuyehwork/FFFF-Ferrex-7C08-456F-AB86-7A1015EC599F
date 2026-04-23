@@ -4,7 +4,7 @@ use eframe::egui;
 use egui::{
     Color32, RichText, FontId, FontFamily, Pos2, Vec2, Margin, Frame, Sense, Layout, 
     Align, Align2, Stroke, Rounding, Label, Image, TextEdit, ScrollArea, Area, 
-    Order, ViewportCommand, Id
+    Order, Id
 };
 use std::sync::Arc;
 use std::collections::{HashSet, HashMap};
@@ -148,7 +148,7 @@ enum SortColumn { Name, Path, Size, Date }
 
 enum ScanProgress {
     Progress { done: usize, total: usize },
-    Done { drive: String, idx_path: String },
+    Done { _drive: String, _idx_path: String },
     Error(String),
 }
 
@@ -184,7 +184,7 @@ struct FerrexApp {
     last_sys_poll: Instant,
     mem_usage_mb: f32,
     cpu_usage: f32,
-    context_menu_row: Option<usize>,
+    _context_menu_row: Option<usize>,
     show_filters: bool,
     #[cfg(windows)]
     tray: Option<tray_icon::TrayIcon>,
@@ -227,7 +227,7 @@ impl FerrexApp {
             last_sys_poll: Instant::now(),
             mem_usage_mb: 0.0,
             cpu_usage: 0.0,
-            context_menu_row: None,
+            _context_menu_row: None,
             show_filters: false,
             #[cfg(windows)]
             tray: None,
@@ -449,11 +449,6 @@ impl eframe::App for FerrexApp {
         self.update_stats();
         self.handle_scan_progress();
 
-        if ctx.input(|i| i.viewport().close_requested()) {
-            ctx.send_viewport_cmd(ViewportCommand::CancelClose);
-            ctx.send_viewport_cmd(ViewportCommand::Visible(false));
-        }
-
         egui::TopBottomPanel::top("titlebar")
             .exact_height(44.0)
             .frame(Frame::none().fill(PANEL).inner_margin(Margin::symmetric(16.0, 0.0)))
@@ -619,7 +614,6 @@ impl FerrexApp {
 
         let mut new_hovered = None;
         let mut new_preview_pos = None;
-        let mut new_context_row = None;
         let mut new_selected = None;
 
         let available_width = ui.available_width();
@@ -637,12 +631,35 @@ impl FerrexApp {
                 
                 if is_hovered { new_hovered = Some(idx); new_preview_pos = Some(rect.right_top()); }
                 if response.clicked() { new_selected = Some(idx); }
-                if response.secondary_clicked() { new_context_row = Some(idx); }
                 
+                let result = self.results[idx].clone();
+                response.context_menu(|ui| {
+                    ui.style_mut().visuals.window_rounding = MENU_ROUNDING;
+                    ui.set_min_width(200.0);
+
+                    // Group 1: Actions
+                    if menu_item(ui, "打开文件", "Enter") { open_file(&result.full_path); ui.close_menu(); }
+                    if menu_item(ui, "在资源管理器中定位", "Ctrl+L") { reveal_in_explorer(&result.full_path); ui.close_menu(); }
+
+                    ui.add_space(2.0);
+                    ui.painter().line_segment([ui.cursor().left_top(), ui.cursor().right_top() + Vec2::new(ui.available_width(), 0.0)], Stroke::new(1.0, BG2));
+                    ui.add_space(2.0);
+
+                    // Group 2: Copy
+                    if menu_item(ui, "复制全路径", "Ctrl+Shift+C") { ui.ctx().output_mut(|o| o.copied_text = result.full_path.clone()); ui.close_menu(); }
+                    if menu_item(ui, "复制文件名", "Ctrl+C") { ui.ctx().output_mut(|o| o.copied_text = result.name.clone()); ui.close_menu(); }
+
+                    ui.add_space(2.0);
+                    ui.painter().line_segment([ui.cursor().left_top(), ui.cursor().right_top() + Vec2::new(ui.available_width(), 0.0)], Stroke::new(1.0, BG2));
+                    ui.add_space(2.0);
+
+                    // Group 3: Info
+                    if menu_item(ui, "属性", "Alt+Enter") { open_properties(&result.full_path); ui.close_menu(); }
+                });
+
                 let mut child_ui = ui.child_ui(rect, Layout::left_to_right(Align::Center), None);
                 child_ui.add_space(8.0);
                 
-                let result = &self.results[idx];
                 child_ui.add(Image::new(self.icons.get_for_path(ui.ctx(), &result.name, result.is_dir)).max_size(Vec2::new(14.0, 14.0)));
                 child_ui.add_space(8.0);
                 
@@ -674,49 +691,6 @@ impl FerrexApp {
                 self.selected_rows.clear();
                 self.selected_rows.insert(idx);
             }
-        }
-        
-        if let Some(idx) = new_context_row { self.context_menu_row = Some(idx); }
-        if let Some(idx) = self.context_menu_row {
-            let result = self.results[idx].clone();
-            let mut close_menu = false;
-            let menu_pos = ui.input(|i| i.pointer.interact_pos().unwrap_or_default());
-
-            Area::new(Id::new("ctx_menu")).fixed_pos(menu_pos).order(Order::Foreground).show(ui.ctx(), |ui| {
-                Frame::none()
-                    .fill(PANEL)
-                    .stroke(Stroke::new(1.0, BORDER2))
-                    .rounding(MENU_ROUNDING)
-                    .shadow(egui::Shadow {
-                        blur: 10.0,
-                        color: Color32::from_black_alpha(120),
-                        ..Default::default()
-                    })
-                    .inner_margin(Margin::same(5.0))
-                    .show(ui, |ui| {
-                    ui.set_min_width(200.0);
-
-                    // Group 1: Actions
-                    if menu_item(ui, "打开文件", "Enter") { open_file(&result.full_path); close_menu = true; }
-                    if menu_item(ui, "在资源管理器中定位", "Ctrl+L") { reveal_in_explorer(&result.full_path); close_menu = true; }
-
-                    ui.add_space(2.0);
-                    ui.painter().line_segment([ui.cursor().left_top(), ui.cursor().right_top() + Vec2::new(ui.available_width(), 0.0)], Stroke::new(1.0, BG2));
-                    ui.add_space(2.0);
-
-                    // Group 2: Copy
-                    if menu_item(ui, "复制全路径", "Ctrl+Shift+C") { ui.ctx().output_mut(|o| o.copied_text = result.full_path.clone()); close_menu = true; }
-                    if menu_item(ui, "复制文件名", "Ctrl+C") { ui.ctx().output_mut(|o| o.copied_text = result.name.clone()); close_menu = true; }
-
-                    ui.add_space(2.0);
-                    ui.painter().line_segment([ui.cursor().left_top(), ui.cursor().right_top() + Vec2::new(ui.available_width(), 0.0)], Stroke::new(1.0, BG2));
-                    ui.add_space(2.0);
-
-                    // Group 3: Info
-                    if menu_item(ui, "属性", "Alt+Enter") { open_properties(&result.full_path); close_menu = true; }
-                });
-            });
-            if close_menu || (ui.input(|i| i.pointer.any_click()) && !ui.input(|i| i.pointer.secondary_down())) { self.context_menu_row = None; }
         }
     }
 
@@ -947,7 +921,7 @@ fn set_startup(enabled: bool) {
 
 fn setup_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
-    let mut msyh_loaded = false;
+    let msyh_loaded = false;
 
     #[cfg(windows)]
     if let Ok(font_bytes) = std::fs::read("C:\\Windows\\Fonts\\msyh.ttc") {
@@ -1051,7 +1025,7 @@ fn spawn_scan(vol: String, tx: std::sync::mpsc::Sender<ScanProgress>) {
                 let drive_letter = vol.chars().next().unwrap_or('c').to_lowercase().to_string();
                 let idx_path = format!("{}_drive.idx", drive_letter);
                 let _ = storage::save_index(&idx_path, &store);
-                let _ = tx.send(ScanProgress::Done { drive: vol, idx_path: idx_path });
+                let _ = tx.send(ScanProgress::Done { _drive: vol, _idx_path: idx_path });
             }
             Err(e) => { let _ = tx.send(ScanProgress::Error(e.to_string())); }
         }
