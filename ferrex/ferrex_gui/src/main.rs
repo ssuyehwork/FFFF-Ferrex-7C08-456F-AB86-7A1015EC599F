@@ -2,12 +2,13 @@
 
 use eframe::egui;
 use egui::{Color32, FontDefinitions, FontFamily, FontId, RichText};
-use indexer::{acquire_privileges, get_ntfs_volumes, get_volume_serial, MftScanner, UsnMonitor};
-use storage::{save_index, LoadedIndex, FileRecord};
-use search::{Searcher, get_name_from_pool};
+use indexer::{acquire_privileges, get_ntfs_volumes, get_volume_serial, MftScanner};
+use storage::{save_index_soa, LoadedIndex};
+use search::{Searcher, get_name_from_pool, PathResolver};
 use std::sync::Arc;
 use std::process::Command;
 use std::collections::{HashMap, HashSet};
+
 // --- Color Palette ---
 const BG: Color32 = Color32::from_rgb(7, 9, 11);
 const PANEL: Color32 = Color32::from_rgb(13, 16, 20);
@@ -15,8 +16,6 @@ const BG2: Color32 = Color32::from_rgb(17, 21, 25);
 const BG3: Color32 = Color32::from_rgb(22, 27, 32);
 const BORDER2: Color32 = Color32::from_rgb(37, 46, 55);
 const ACCENT: Color32 = Color32::from_rgb(255, 140, 0);
-#[allow(dead_code)]
-const ACCENT2: Color32 = Color32::from_rgb(201, 110, 0);
 const TEXT: Color32 = Color32::from_rgb(200, 212, 220);
 const TEXT2: Color32 = Color32::from_rgb(122, 143, 158);
 const TEXT3: Color32 = Color32::from_rgb(61, 80, 96);
@@ -81,7 +80,7 @@ struct LoadedVolume {
     drive: String,
     store: Arc<LoadedIndex>,
     sorted_idx: Arc<Vec<u32>>,
-    resolver: Arc<search::PathResolver<'static>>,
+    resolver: Arc<PathResolver<'static>>,
 }
 
 struct FerrexApp {
@@ -102,7 +101,6 @@ impl FerrexApp {
         egui_extras::install_image_loaders(&cc.egui_ctx);
 
         let mut fonts = FontDefinitions::default();
-        // Load fonts via include_bytes! to ensure they are embedded in the binary
         fonts.font_data.insert("mono_data".to_owned(), egui::FontData::from_static(include_bytes!("../assets/JetBrainsMono-Regular.ttf")));
         fonts.families.entry(FontFamily::Name("mono".into())).or_default().insert(0, "mono_data".to_owned());
 
@@ -136,11 +134,7 @@ impl FerrexApp {
             "BFEBFBFF000306C3", "SGH412RF00", "494000PA0D9L",
             "PHYS825203NX480BGN", "NA5360WJ", "NA7G89GQ", "03000210052122072519"
         ];
-        let cmds = [
-            "cpu get processorid",
-            "baseboard get serialnumber",
-            "bios get serialnumber",
-        ];
+        let cmds = ["cpu get processorid", "baseboard get serialnumber", "bios get serialnumber"];
         for cmd_args in cmds {
             if let Ok(output) = Command::new("wmic").args(cmd_args.split_whitespace()).output() {
                 let text = String::from_utf8_lossy(&output.stdout);
@@ -156,37 +150,16 @@ impl FerrexApp {
     }
 
     fn init_indices(&mut self) {
-        if let Err(_) = acquire_privileges() {
-            self.status_text = "缺少管理员权限".to_string();
-            return;
-        }
-
+        let _ = acquire_privileges();
         let drives = get_ntfs_volumes();
         for drive in drives {
             let drive_cloned = drive.clone();
             let idx_path = format!("{}_drive.idx", drive.replace(":", ""));
             let loaded = if let Ok(loaded) = LoadedIndex::load(&idx_path) {
-                // Verify serial
-                let current_serial = get_volume_serial(&drive);
-                if loaded.volume_serial != current_serial {
-                     self.rebuild_index(&drive, &idx_path)
+                if loaded.volume_serial != get_volume_serial(&drive) {
+                    self.rebuild_index(&drive, &idx_path)
                 } else {
-                    // Try incremental update
-                    if let Ok(mut monitor) = UsnMonitor::new(&drive, loaded.usn_watermark) {
-                        if let Ok(events) = monitor.read_events() {
-                            if !events.is_empty() {
-                                // For simplicity in this demo, if events found, we rebuild.
-                                // Proper implementation would patch the in-memory store.
-                                self.rebuild_index(&drive, &idx_path)
-                            } else {
-                                Some(loaded)
-                            }
-                        } else {
-                            Some(loaded)
-                        }
-                    } else {
-                        Some(loaded)
-                    }
+                    Some(loaded)
                 }
             } else {
                 self.rebuild_index(&drive, &idx_path)
@@ -194,20 +167,20 @@ impl FerrexApp {
 
             if let Some(store) = loaded {
                 let store_arc = Arc::new(store);
-
                 let static_store = Box::leak(Box::new(store_arc.clone()));
-                let records = static_store.get_records();
+
+                let frns = static_store.frns();
+                let offsets = static_store.name_offsets();
                 let pool = static_store.get_string_pool();
 
-                let mut sorted_idx: Vec<u32> = (0..records.len() as u32).collect();
+                let mut sorted_idx: Vec<u32> = (0..static_store.record_count as u32).collect();
                 sorted_idx.sort_by_key(|&i| {
-                    let name = get_name_from_pool(pool, records[i as usize].name_offset as usize);
-                    name.to_lowercase()
+                    get_name_from_pool(pool, offsets[i as usize] as usize).to_lowercase()
                 });
 
-                let resolver = Arc::new(search::PathResolver::new(records, pool));
+                let resolver = Arc::new(PathResolver::new(frns, static_store.parent_frns(), offsets, pool));
 
-                self.total_records += records.len();
+                self.total_records += static_store.record_count;
                 self.active_drives.insert(drive_cloned.clone());
                 self.volumes.push(LoadedVolume {
                     drive: drive_cloned,
@@ -222,27 +195,28 @@ impl FerrexApp {
 
     fn rebuild_index(&self, drive: &str, path: &str) -> Option<LoadedIndex> {
         if let Ok(scanner) = MftScanner::new(drive) {
-            if let Ok((raw_entries, next_usn)) = scanner.scan() {
-                let mut records = Vec::with_capacity(raw_entries.len());
-                let mut string_pool = Vec::new();
-                let serial = get_volume_serial(drive);
+            if let Ok((entries, usn)) = scanner.scan() {
+                let mut frns = Vec::new();
+                let mut parents = Vec::new();
+                let mut sizes = Vec::new();
+                let mut times = Vec::new();
+                let mut offsets = Vec::new();
+                let mut flags = Vec::new();
+                let mut pool = Vec::new();
 
-                for entry in raw_entries {
-                    let name_offset = string_pool.len() as u32;
-                    string_pool.extend_from_slice(entry.name.as_bytes());
-                    string_pool.push(0);
-
-                    records.push(FileRecord {
-                        frn: entry.frn,
-                        parent_frn: entry.parent_frn,
-                        size: entry.file_size,
-                        timestamp: entry.modified,
-                        name_offset,
-                        flags: entry.flags,
-                    });
+                for e in entries {
+                    frns.push(e.frn);
+                    parents.push(e.parent_frn);
+                    sizes.push(e.file_size);
+                    times.push(e.modified);
+                    offsets.push(pool.len() as u32);
+                    flags.push(e.flags);
+                    pool.extend_from_slice(e.name.as_bytes());
+                    pool.push(0);
                 }
 
-                if save_index(path, &records, &string_pool, next_usn, serial).is_ok() {
+                let serial = get_volume_serial(drive);
+                if save_index_soa(path, &frns, &parents, &sizes, &times, &offsets, &flags, &pool, usn, serial).is_ok() {
                     return LoadedIndex::load(path).ok();
                 }
             }
@@ -259,22 +233,26 @@ impl FerrexApp {
         for vol in &self.volumes {
             if !self.active_drives.contains(&vol.drive) { continue; }
 
-            let records = vol.store.get_records();
-            let pool = vol.store.get_string_pool();
-            let searcher = Searcher::new(records, pool, &vol.sorted_idx);
-            let indices = searcher.search_with_ext(&query, ext);
+            let store = &vol.store;
+            let searcher = Searcher::new(store.frns(), store.name_offsets(), store.get_string_pool(), &vol.sorted_idx);
+            let matches = searcher.search_with_ext(&query, ext);
 
-            for idx in indices {
-                let rec = &records[idx];
-                let name = get_name_from_pool(pool, rec.name_offset as usize);
-                let path = vol.resolver.resolve(rec.frn);
+            let frns = store.frns();
+            let offsets = store.name_offsets();
+            let pool = store.get_string_pool();
+            let sizes = store.sizes();
+            let times = store.timestamps();
+            let flags = store.flags();
+
+            for idx in matches {
+                let name = get_name_from_pool(pool, offsets[idx] as usize);
                 all_results.push(SearchResult {
                     drive: vol.drive.clone(),
                     name: name.clone(),
-                    full_path: format!("{}:\\{}", vol.drive, path),
-                    size: rec.size,
-                    timestamp: rec.timestamp,
-                    is_dir: (rec.flags & 0x10) != 0,
+                    full_path: format!("{}:\\{}", vol.drive, vol.resolver.resolve(frns[idx])),
+                    size: sizes[idx],
+                    timestamp: times[idx],
+                    is_dir: (flags[idx] & 0x10) != 0,
                 });
                 if all_results.len() >= 5000 { break; }
             }
@@ -292,7 +270,6 @@ impl eframe::App for FerrexApp {
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.centered_and_justified(|ui| {
                     ui.vertical_centered(|ui| {
-                        // Red lock placeholder
                         let (rect, _) = ui.allocate_exact_size(egui::vec2(48.0, 48.0), egui::Sense::hover());
                         ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(2.0, DANGER));
                         ui.add_space(10.0);
@@ -304,7 +281,6 @@ impl eframe::App for FerrexApp {
             return;
         }
 
-        // Titlebar
         egui::TopBottomPanel::top("titlebar")
             .exact_height(44.0)
             .frame(egui::Frame::none().fill(PANEL).inner_margin(egui::Margin::symmetric(16.0, 0.0)))
@@ -335,7 +311,6 @@ impl eframe::App for FerrexApp {
                 });
             });
 
-        // Drive Selector
         egui::TopBottomPanel::top("drives")
             .exact_height(40.0)
             .frame(egui::Frame::none().fill(BG2).inner_margin(egui::Margin::symmetric(16.0, 0.0)))
@@ -348,17 +323,14 @@ impl eframe::App for FerrexApp {
                     for vol in &self.volumes {
                         let is_active = self.active_drives.contains(&vol.drive);
                         let label = format!("{}: {}", vol.drive, format_count(vol.store.record_count));
-
                         let (bg, stroke_color, text_color) = if is_active {
                             (Color32::from_rgba_unmultiplied(255, 140, 0, 30), ACCENT, ACCENT)
                         } else {
                             (BG3, BORDER2, TEXT2)
                         };
 
-                        let btn = egui::Button::new(RichText::new(&label).font(FontId::new(12.0, FontFamily::Name("cond".into()))).color(text_color))
-                            .fill(bg).stroke(egui::Stroke::new(1.0, stroke_color)).rounding(egui::Rounding::ZERO);
-
-                        if ui.add(btn).clicked() {
+                        if ui.add(egui::Button::new(RichText::new(&label).font(FontId::new(12.0, FontFamily::Name("cond".into()))).color(text_color))
+                            .fill(bg).stroke(egui::Stroke::new(1.0, stroke_color)).rounding(egui::Rounding::ZERO)).clicked() {
                             to_toggle = Some((vol.drive.clone(), is_active));
                         }
                         ui.add_space(4.0);
@@ -376,7 +348,6 @@ impl eframe::App for FerrexApp {
                 });
             });
 
-        // Search Bar
         egui::TopBottomPanel::top("searchbar")
             .exact_height(46.0)
             .frame(egui::Frame::none().fill(PANEL).inner_margin(egui::Margin::symmetric(16.0, 5.0)))
@@ -417,7 +388,6 @@ impl eframe::App for FerrexApp {
                 });
             });
 
-        // Status Bar
         egui::TopBottomPanel::bottom("statusbar")
             .exact_height(26.0)
             .frame(egui::Frame::none().fill(PANEL).inner_margin(egui::Margin::symmetric(16.0, 0.0)))
@@ -432,7 +402,6 @@ impl eframe::App for FerrexApp {
                 });
             });
 
-        // Column Header
         egui::TopBottomPanel::top("col_header")
             .exact_height(30.0)
             .frame(egui::Frame::none().fill(BG2).inner_margin(egui::Margin::symmetric(16.0, 0.0)))
@@ -446,7 +415,6 @@ impl eframe::App for FerrexApp {
                 });
             });
 
-        // Central Results
         egui::CentralPanel::default().frame(egui::Frame::none().fill(BG)).show(ctx, |ui| {
             if self.results.is_empty() {
                 ui.centered_and_justified(|ui| {
@@ -459,16 +427,11 @@ impl eframe::App for FerrexApp {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     for (i, res) in self.results.iter().enumerate() {
                         let bg = if i % 2 == 0 { BG } else { BG2 };
-                        let frame = egui::Frame::none().fill(bg).inner_margin(egui::Margin::symmetric(16.0, 4.0));
-                        
-                        frame.show(ui, |ui| {
+                        egui::Frame::none().fill(bg).inner_margin(egui::Margin::symmetric(16.0, 4.0)).show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                let icon = self.icons.get_for_entry(&res.name, res.is_dir);
-                                ui.add(egui::Image::new(icon.clone()).fit_to_exact_size(egui::vec2(14.0, 14.0)));
+                                ui.add(egui::Image::new(self.icons.get_for_entry(&res.name, res.is_dir).clone()).fit_to_exact_size(egui::vec2(14.0, 14.0)));
 
-                                // Drive Tag
-                                let tag_frame = egui::Frame::none().fill(BG3).stroke(egui::Stroke::new(1.0, BORDER2)).inner_margin(egui::Margin::symmetric(4.0, 1.0));
-                                tag_frame.show(ui, |ui| {
+                                egui::Frame::none().fill(BG3).stroke(egui::Stroke::new(1.0, BORDER2)).inner_margin(egui::Margin::symmetric(4.0, 1.0)).show(ui, |ui| {
                                     ui.label(RichText::new(&res.drive).font(FontId::new(9.0, FontFamily::Name("cond".into()))).color(TEXT3));
                                 });
 
@@ -500,21 +463,14 @@ fn format_size(bytes: u64) -> String {
     const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
     let mut size = bytes as f64;
     let mut unit = 0;
-    while size >= 1024.0 && unit < UNITS.len() - 1 {
-        size /= 1024.0;
-        unit += 1;
-    }
+    while size >= 1024.0 && unit < UNITS.len() - 1 { size /= 1024.0; unit += 1; }
     format!("{:.1} {}", size, UNITS[unit])
 }
 
 fn format_timestamp(ts: u64) -> String {
     if ts == 0 { return "—".to_string(); }
-    // FILETIME is 100-nanosecond intervals since Jan 1, 1601.
-    // Unix epoch is Jan 1, 1970. Difference is 11644473600 seconds.
     let unix_secs = (ts / 10_000_000) as i64 - 11644473600;
     let dt = std::time::UNIX_EPOCH + std::time::Duration::from_secs(unix_secs as u64);
-
-    // Quick and dirty format without extra dependencies
     let datetime = chrono::DateTime::<chrono::Local>::from(dt);
     datetime.format("%Y-%m-%d %H:%M").to_string()
 }

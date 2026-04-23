@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use indexer::{acquire_privileges, get_ntfs_volumes, get_volume_serial, MftScanner};
-use storage::{save_index, LoadedIndex, FileRecord};
+use storage::{save_index_soa, LoadedIndex};
 use search::{Searcher, get_name_from_pool};
 use std::collections::HashMap;
 use std::path::Path;
@@ -44,30 +44,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             for vol in volumes {
                 println!("Scanning volume {}...", vol);
                 let scanner = MftScanner::new(&vol)?;
-                let (raw_entries, next_usn) = scanner.scan()?;
-                println!("Found {} entries", raw_entries.len());
+                let (entries, usn) = scanner.scan()?;
+                println!("Found {} entries", entries.len());
 
-                let mut string_pool = Vec::new();
-                let mut records = Vec::with_capacity(raw_entries.len());
-                let serial = get_volume_serial(&vol);
-                
-                for entry in raw_entries {
-                    let name_offset = string_pool.len() as u32;
-                    string_pool.extend_from_slice(entry.name.as_bytes());
-                    string_pool.push(0); 
+                let mut frns = Vec::new();
+                let mut parents = Vec::new();
+                let mut sizes = Vec::new();
+                let mut times = Vec::new();
+                let mut offsets = Vec::new();
+                let mut flags = Vec::new();
+                let mut pool = Vec::new();
 
-                    records.push(FileRecord {
-                        frn: entry.frn,
-                        parent_frn: entry.parent_frn,
-                        size: entry.file_size,
-                        timestamp: entry.modified,
-                        name_offset,
-                        flags: entry.flags,
-                    });
+                for e in entries {
+                    frns.push(e.frn);
+                    parents.push(e.parent_frn);
+                    sizes.push(e.file_size);
+                    times.push(e.modified);
+                    offsets.push(pool.len() as u32);
+                    flags.push(e.flags);
+                    pool.extend_from_slice(e.name.as_bytes());
+                    pool.push(0);
                 }
 
+                let serial = get_volume_serial(&vol);
                 let idx_path = format!("{}_drive.idx", vol.chars().next().unwrap().to_lowercase());
-                save_index(&idx_path, &records, &string_pool, next_usn, serial)?;
+                save_index_soa(&idx_path, &frns, &parents, &sizes, &times, &offsets, &flags, &pool, usn, serial)?;
                 println!("Successfully saved index to {}", idx_path);
             }
         }
@@ -91,25 +92,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             for (drive_letter, store) in loaded_stores {
-                let records = store.get_records();
+                let frns = store.frns();
+                let parents = store.parent_frns();
+                let offsets = store.name_offsets();
                 let pool = store.get_string_pool();
                 
-                let mut frn_to_idx = HashMap::with_capacity(records.len());
-                for (i, rec) in records.iter().enumerate() {
-                    frn_to_idx.insert(rec.frn, i);
+                let mut frn_to_idx = HashMap::with_capacity(store.record_count);
+                for (i, &frn) in frns.iter().enumerate() {
+                    frn_to_idx.insert(frn, i);
                 }
 
-                let mut sorted_idx: Vec<u32> = (0..records.len() as u32).collect();
+                let mut sorted_idx: Vec<u32> = (0..store.record_count as u32).collect();
                 sorted_idx.sort_by_key(|&i| {
-                    let name = get_name_from_pool(pool, records[i as usize].name_offset as usize);
-                    name.to_lowercase()
+                    get_name_from_pool(pool, offsets[i as usize] as usize).to_lowercase()
                 });
 
-                let searcher = Searcher::new(records, pool, &sorted_idx);
+                let searcher = Searcher::new(frns, offsets, pool, &sorted_idx);
                 let matches = searcher.search(query);
 
                 for idx in matches {
-                    let full_path = resolve_full_path(&drive_letter, idx, records, pool, &frn_to_idx);
+                    let full_path = resolve_full_path(&drive_letter, idx, frns, parents, offsets, pool, &frn_to_idx);
                     println!("{}", full_path);
                 }
             }
@@ -125,7 +127,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn resolve_full_path(
     drive: &str,
     idx: usize,
-    records: &[FileRecord],
+    frns: &[u64],
+    parents: &[u64],
+    offsets: &[u32],
     pool: &[u8],
     frn_to_idx: &HashMap<u64, usize>
 ) -> String {
@@ -133,12 +137,11 @@ fn resolve_full_path(
     let mut current_idx = Some(idx);
 
     while let Some(idx) = current_idx {
-        let rec = &records[idx];
-        let name = get_name_from_pool(pool, rec.name_offset as usize);
+        let name = get_name_from_pool(pool, offsets[idx] as usize);
         path_parts.push(name);
 
-        let p_frn = rec.parent_frn;
-        let c_frn = rec.frn;
+        let p_frn = parents[idx];
+        let c_frn = frns[idx];
 
         if c_frn == 5 || p_frn == 0 {
             break;
