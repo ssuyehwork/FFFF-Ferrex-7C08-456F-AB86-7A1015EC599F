@@ -154,14 +154,6 @@ struct FerrexApp {
     active_drives: HashSet<String>,
     query: String,
     ext_filter: String,
-    use_regex: bool,
-    min_size_str: String,
-    max_size_str: String,
-    date_from_str: String,
-    date_to_str: String,
-    show_hidden: bool,
-    show_system: bool,
-    dirs_only: bool,
     results: Vec<SearchResult>,
     selected_rows: HashSet<usize>,
     last_search_ms: f64,
@@ -197,14 +189,6 @@ impl FerrexApp {
             active_drives: HashSet::new(),
             query: String::new(),
             ext_filter: String::new(),
-            use_regex: false,
-            min_size_str: String::new(),
-            max_size_str: String::new(),
-            date_from_str: String::new(),
-            date_to_str: String::new(),
-            show_hidden: false,
-            show_system: false,
-            dirs_only: false,
             results: Vec::new(),
             selected_rows: HashSet::new(),
             last_search_ms: 0.0,
@@ -318,13 +302,14 @@ impl FerrexApp {
 
     #[cfg(windows)]
     fn setup_tray(&mut self) {
-        let icon = load_icon();
-        let tray = tray_icon::TrayIconBuilder::new()
-            .with_tooltip("Ferrex")
-            .with_icon(icon)
-            .build()
-            .ok();
-        self.tray = tray;
+        if let Some(icon) = load_icon() {
+            let tray = tray_icon::TrayIconBuilder::new()
+                .with_tooltip("Ferrex")
+                .with_icon(icon)
+                .build()
+                .ok();
+            self.tray = tray;
+        }
     }
 
     fn process_usn_events(&mut self) {
@@ -346,15 +331,15 @@ impl FerrexApp {
         let t0 = Instant::now();
         let opts = SearchOptions {
             query: &self.query,
-            use_regex: self.use_regex,
+            use_regex: false,
             ext_filter: if self.ext_filter.is_empty() { None } else { Some(&self.ext_filter) },
-            min_size: parse_size(&self.min_size_str),
-            max_size: parse_size(&self.max_size_str),
-            date_from: parse_date_to_filetime(&self.date_from_str),
-            date_to: parse_date_to_filetime(&self.date_to_str),
-            include_dirs: !self.dirs_only,
-            include_hidden: self.show_hidden,
-            include_system: self.show_system,
+            min_size: None,
+            max_size: None,
+            date_from: None,
+            date_to: None,
+            include_dirs: true,
+            include_hidden: false,
+            include_system: false,
         };
 
         let mut all_results = Vec::new();
@@ -962,16 +947,11 @@ fn open_properties(path: &str) {
 }
 
 #[cfg(windows)]
-fn load_icon() -> tray_icon::Icon {
-    let (icon_rgba, icon_width, icon_height) = {
-        let image = image::open("ferrex.png")
-            .expect("Failed to open ferrex.png")
-            .into_rgba8();
-        let (width, height) = image.dimensions();
-        let rgba = image.into_raw();
-        (rgba, width, height)
-    };
-    tray_icon::Icon::from_rgba(icon_rgba, icon_width, icon_height).expect("Failed to create tray icon")
+fn load_icon() -> Option<tray_icon::Icon> {
+    let image = image::open("ferrex.png").ok()?.into_rgba8();
+    let (width, height) = image.dimensions();
+    let rgba = image.into_raw();
+    tray_icon::Icon::from_rgba(rgba, width, height).ok()
 }
 
 #[cfg(windows)]
@@ -1058,28 +1038,6 @@ fn format_timestamp(ts: u64) -> String {
     "—".to_string() 
 }
 
-fn parse_size(s: &str) -> Option<u64> {
-    let s = s.trim().to_lowercase();
-    if s.is_empty() { return None; }
-    let (num_part, unit) = if s.ends_with("kb") { (&s[..s.len()-2], 1024) }
-    else if s.ends_with("mb") { (&s[..s.len()-2], 1024*1024) }
-    else if s.ends_with("gb") { (&s[..s.len()-2], 1024*1024*1024) }
-    else if s.ends_with("k") { (&s[..s.len()-1], 1024) }
-    else if s.ends_with("m") { (&s[..s.len()-1], 1024*1024) }
-    else if s.ends_with("g") { (&s[..s.len()-1], 1024*1024*1024) }
-    else { (s.as_str(), 1) };
-    num_part.trim().parse::<u64>().ok().map(|n| n * unit)
-}
-
-fn parse_date_to_filetime(s: &str) -> Option<u64> {
-    use chrono::{NaiveDate, Utc, TimeZone};
-    let date = NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()?;
-    let datetime = date.and_hms_opt(0, 0, 0)?;
-    let dt_utc = Utc.from_local_datetime(&datetime).single()?;
-    let unix_secs = dt_utc.timestamp();
-    let filetime_secs = unix_secs + 11644473600;
-    Some((filetime_secs as u64) * 10_000_000)
-}
 
 fn spawn_scan(vol: String, tx: std::sync::mpsc::Sender<ScanProgress>) {
     std::thread::spawn(move || {
