@@ -7,6 +7,14 @@ use windows::{
     Win32::System::Threading::*,
     Win32::System::IO::DeviceIoControl,
 };
+use std::sync::mpsc::{self, Receiver};
+
+pub enum UsnEvent {
+    Created { frn: u64, parent_frn: u64, name: String, flags: u32 },
+    Deleted { frn: u64 },
+    Renamed { old_frn: u64, new_name: String, new_parent_frn: u64 },
+    Modified { frn: u64 },
+}
 
 pub fn acquire_privileges() -> Result<()> {
     unsafe {
@@ -183,6 +191,135 @@ impl Drop for MftScanner {
     fn drop(&mut self) {
         unsafe { let _ = CloseHandle(self.volume_handle); }
     }
+}
+
+/// Spawn a background USN monitoring thread for a volume.
+/// Returns a Receiver that yields UsnEvent values.
+/// The thread exits when the Receiver is dropped.
+pub fn spawn_usn_watcher(volume: &str) -> Result<Receiver<UsnEvent>> {
+    let volume = volume.to_string();
+    let (tx, rx) = mpsc::channel();
+
+    std::thread::Builder::new()
+        .name(format!("usn-watcher-{}", volume))
+        .spawn(move || {
+            let path = format!("\\\\.\\{}", volume);
+            unsafe {
+                let handle = match CreateFileW(
+                    &HSTRING::from(path),
+                    GENERIC_READ.0,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    None,
+                    OPEN_EXISTING,
+                    FILE_FLAGS_AND_ATTRIBUTES::default(),
+                    None,
+                ) {
+                    Ok(h) => h,
+                    Err(_) => return,
+                };
+
+                let mut bytes_returned = 0u32;
+                let mut journal_data = USN_JOURNAL_DATA_V0::default();
+
+                if DeviceIoControl(
+                    handle,
+                    FSCTL_QUERY_USN_JOURNAL,
+                    None, 0,
+                    Some(&mut journal_data as *mut _ as *mut _),
+                    std::mem::size_of::<USN_JOURNAL_DATA_V0>() as u32,
+                    Some(&mut bytes_returned),
+                    None,
+                ).is_err() {
+                    let _ = CloseHandle(handle);
+                    return;
+                }
+
+                let mut next_usn = journal_data.NextUsn;
+                let journal_id  = journal_data.UsnJournalID;
+
+                let mut buffer = vec![0u8; 65536];
+
+                loop {
+                    let rujd = READ_USN_JOURNAL_DATA_V0 {
+                        StartUsn: next_usn,
+                        ReasonMask: USN_REASON_FILE_CREATE
+                            | USN_REASON_FILE_DELETE
+                            | USN_REASON_RENAME_NEW_NAME
+                            | USN_REASON_RENAME_OLD_NAME
+                            | USN_REASON_DATA_OVERWRITE,
+                        ReturnOnlyOnClose: 0,
+                        Timeout: 1,        // 1 second wait
+                        BytesToWaitFor: 1,
+                        UsnJournalID: journal_id,
+                    };
+
+                    let res = DeviceIoControl(
+                        handle,
+                        FSCTL_READ_USN_JOURNAL,
+                        Some(&rujd as *const _ as *const _),
+                        std::mem::size_of::<READ_USN_JOURNAL_DATA_V0>() as u32,
+                        Some(buffer.as_mut_ptr() as *mut _),
+                        buffer.len() as u32,
+                        Some(&mut bytes_returned),
+                        None,
+                    );
+
+                    if res.is_err() {
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                        continue;
+                    }
+
+                    if bytes_returned >= 8 {
+                        next_usn = i64::from_le_bytes(buffer[0..8].try_into().unwrap());
+                        let mut offset = 8usize;
+                        while offset + std::mem::size_of::<USN_RECORD_V2>() <= bytes_returned as usize {
+                            let record = &*(buffer.as_ptr().add(offset) as *const USN_RECORD_V2);
+
+                            let name_ptr = buffer.as_ptr().add(offset + record.FileNameOffset as usize) as *const u16;
+                            let name_len = record.FileNameLength as usize / 2;
+                            let name_slice = std::slice::from_raw_parts(name_ptr, name_len);
+                            let name = String::from_utf16_lossy(name_slice);
+
+                            let event = if record.Reason & USN_REASON_FILE_DELETE != 0 {
+                                UsnEvent::Deleted { frn: record.FileReferenceNumber }
+                            } else if record.Reason & USN_REASON_RENAME_NEW_NAME != 0 {
+                                UsnEvent::Renamed {
+                                    old_frn: record.FileReferenceNumber,
+                                    new_name: name,
+                                    new_parent_frn: record.ParentFileReferenceNumber,
+                                }
+                            } else if record.Reason & USN_REASON_FILE_CREATE != 0 {
+                                UsnEvent::Created {
+                                    frn: record.FileReferenceNumber,
+                                    parent_frn: record.ParentFileReferenceNumber,
+                                    name,
+                                    flags: record.FileAttributes,
+                                }
+                            } else {
+                                UsnEvent::Modified { frn: record.FileReferenceNumber }
+                            };
+
+                            if tx.send(event).is_err() {
+                                let _ = CloseHandle(handle);
+                                return; // Receiver dropped — exit cleanly
+                            }
+
+                            if record.RecordLength == 0 { break; }
+                            offset += record.RecordLength as usize;
+                        }
+                    }
+                }
+            }
+        }).map_err(|e| Error::new(E_FAIL, HSTRING::from(e.to_string())))?;
+
+    Ok(rx)
+}
+
+pub fn get_ntfs_volumes_filtered(exclude_prefixes: &[String]) -> Vec<String> {
+    get_ntfs_volumes()
+        .into_iter()
+        .filter(|v| !exclude_prefixes.iter().any(|ex| v.starts_with(ex)))
+        .collect()
 }
 
 pub struct UsnMonitor {

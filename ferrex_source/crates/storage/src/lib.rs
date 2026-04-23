@@ -26,6 +26,8 @@ pub struct IndexStore {
     pub sorted_idx: Vec<u32>,
 }
 
+pub type LoadedIndex = IndexStore;
+
 impl IndexStore {
     pub fn new() -> Self {
         Self {
@@ -43,45 +45,85 @@ impl IndexStore {
         }
     }
 
-    pub fn rebuild_lookups(&mut self) {
-        self.frn_to_idx.clear();
-        for (i, &frn) in self.frns.iter().enumerate() {
-            self.frn_to_idx.insert(frn, i as u32);
-        }
-        
-        // Phase 3c: Sorted index for binary search
+    /// Build a sorted index array (indices into records, sorted by lowercase filename).
+    /// Call once after loading. Store result in FerrexApp.
+    pub fn build_sorted_idx(&self) -> Vec<u32> {
         let mut idx: Vec<u32> = (0..self.frns.len() as u32).collect();
-        idx.sort_by_cached_key(|&i| {
-            let offset = self.name_offsets[i as usize] as usize;
-            let slice = &self.string_pool[offset..];
-            let end = slice.iter().position(|&b| b == 0).unwrap_or(slice.len());
-            String::from_utf8_lossy(&slice[..end]).to_lowercase()
+        idx.sort_unstable_by(|&a, &b| {
+            let name_a = pool_get_name_lower(&self.string_pool, self.name_offsets[a as usize] as usize);
+            let name_b = pool_get_name_lower(&self.string_pool, self.name_offsets[b as usize] as usize);
+            name_a.cmp(&name_b)
         });
-        self.sorted_idx = idx;
+        idx
     }
 
-    pub fn get_path(&self, index: usize) -> String {
-        let mut path_parts = Vec::new();
-        let mut current_frn = self.parent_frns[index];
-        
-        // Phase 3b: Resolve full paths by walking up parent_frn chain
-        // Root FRN is usually 5 on NTFS
-        while current_frn != 0 && current_frn != 5 {
-            if let Some(&idx) = self.frn_to_idx.get(&current_frn) {
-                let offset = self.name_offsets[idx as usize] as usize;
-                let slice = &self.string_pool[offset..];
-                let end = slice.iter().position(|&b| b == 0).unwrap_or(slice.len());
-                path_parts.push(String::from_utf8_lossy(&slice[..end]).to_string());
-                current_frn = self.parent_frns[idx as usize];
-            } else {
-                path_parts.push("<ORPHAN>".to_string());
-                break;
-            }
+    /// Build FRN → record index map for path resolution.
+    pub fn build_frn_map(&self) -> HashMap<u64, u32> {
+        let mut map = HashMap::with_capacity(self.frns.len());
+        for (i, &frn) in self.frns.iter().enumerate() {
+            map.insert(frn, i as u32);
         }
-        
-        path_parts.reverse();
-        path_parts.join("\\")
+        map
     }
+}
+
+pub fn pool_get_name(pool: &[u8], offset: usize) -> String {
+    if offset >= pool.len() { return String::new(); }
+    let slice = &pool[offset..];
+    let end = slice.iter().position(|&b| b == 0).unwrap_or(slice.len());
+    String::from_utf8_lossy(&slice[..end]).to_string()
+}
+
+pub fn pool_get_name_lower(pool: &[u8], offset: usize) -> String {
+    pool_get_name(pool, offset).to_lowercase()
+}
+
+/// Resolve full path from FRN chain using a pre-built FRN map.
+/// Uses an LRU cache to avoid redundant traversals.
+pub fn resolve_path(
+    drive:   &str,
+    idx:     u32,
+    frns:    &[u64],
+    parent_frns: &[u64],
+    name_offsets: &[u32],
+    pool:    &[u8],
+    frn_map: &HashMap<u64, u32>,
+    lru:     &mut lru::LruCache<u64, String>,
+) -> String {
+    let frn = frns[idx as usize];
+
+    // Check LRU for this FRN
+    if let Some(cached) = lru.get(&frn) {
+        return cached.clone();
+    }
+
+    let mut parts: Vec<String> = Vec::new();
+    let mut current = idx;
+
+    loop {
+        let current_frn = frns[current as usize];
+        let parent_frn = parent_frns[current as usize];
+        let name_offset = name_offsets[current as usize] as usize;
+        
+        parts.push(pool_get_name(pool, name_offset));
+
+        // Root FRN on NTFS is typically 5
+        if current_frn == 5 || parent_frn == 0 || current_frn == parent_frn {
+            break;
+        }
+
+        match frn_map.get(&parent_frn) {
+            Some(&parent_idx) => current = parent_idx,
+            None => break,
+        }
+    }
+
+    parts.reverse();
+    let path = format!("{}:\\{}", drive, parts.join("\\"));
+
+    // Cache it
+    lru.put(frn, path.clone());
+    path
 }
 
 #[repr(C, packed)]
