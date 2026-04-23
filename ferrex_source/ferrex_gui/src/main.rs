@@ -463,9 +463,11 @@ impl eframe::App for FerrexApp {
             .show(ctx, |ui| { self.draw_status_bar(ui); });
 
         egui::CentralPanel::default().frame(Frame::none().fill(BG)).show(ctx, |ui| {
-            self.draw_column_header(ui);
-            ui.add(egui::Separator::default().spacing(0.0));
-            self.draw_results_list(ui);
+            ui.with_layout(Layout::top_down(Align::Min), |ui| {
+                self.draw_column_header(ui);
+                ui.add(egui::Separator::default().spacing(0.0));
+                self.draw_results_list(ui);
+            });
             self.draw_hover_preview(ctx);
         });
     }
@@ -692,12 +694,20 @@ impl FerrexApp {
     }
 
     fn draw_column_header(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_centered(|ui| {
-            ui.add_space(16.0 + 24.0);
-            if header_button(ui, "NAME", 300.0, self.sort_col == SortColumn::Name) { self.sort_col = SortColumn::Name; self.sort_asc = !self.sort_asc; self.apply_sort(); }
-            if header_button(ui, "PATH", ui.available_width() - 240.0, self.sort_col == SortColumn::Path) { self.sort_col = SortColumn::Path; self.sort_asc = !self.sort_asc; self.apply_sort(); }
-            if header_button(ui, "SIZE", 80.0, self.sort_col == SortColumn::Size) { self.sort_col = SortColumn::Size; self.sort_asc = !self.sort_asc; self.apply_sort(); }
-            if header_button(ui, "DATE", 140.0, self.sort_col == SortColumn::Date) { self.sort_col = SortColumn::Date; self.sort_asc = !self.sort_asc; self.apply_sort(); }
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            ui.add_space(58.0); // 8 + 14 + 8 + 22 + 6
+
+            let total_w = ui.available_width();
+            let name_w = 260.0;
+            let size_w = 80.0;
+            let date_w = 130.0;
+            let path_w = total_w - name_w - size_w - date_w - 32.0;
+
+            if header_button(ui, "NAME", name_w, self.sort_col == SortColumn::Name) { self.sort_col = SortColumn::Name; self.sort_asc = !self.sort_asc; self.apply_sort(); }
+            if header_button(ui, "PATH", path_w, self.sort_col == SortColumn::Path) { self.sort_col = SortColumn::Path; self.sort_asc = !self.sort_asc; self.apply_sort(); }
+            if header_button(ui, "SIZE", size_w, self.sort_col == SortColumn::Size) { self.sort_col = SortColumn::Size; self.sort_asc = !self.sort_asc; self.apply_sort(); }
+            if header_button(ui, "DATE", date_w, self.sort_col == SortColumn::Date) { self.sort_col = SortColumn::Date; self.sort_asc = !self.sort_asc; self.apply_sort(); }
         });
     }
 
@@ -713,40 +723,44 @@ impl FerrexApp {
         let results_to_show = self.results.len().min(200);
 
         ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            for idx in 0..results_to_show {
-                let is_selected = self.selected_rows.contains(&idx);
-                let (rect, response) = ui.allocate_at_least(Vec2::new(available_width, 30.0), Sense::click());
-                let is_hovered = response.hovered();
-                
-                let bg = if is_selected { Color32::from_rgba_unmultiplied(255, 140, 0, 25) } else if is_hovered { BG3 } else if idx % 2 == 0 { BG } else { BG2 };
-                ui.painter().rect_filled(rect, Rounding::ZERO, bg);
-                if is_selected || is_hovered { ui.painter().line_segment([rect.left_top(), rect.left_bottom()], Stroke::new(3.0, ACCENT)); }
-                
-                if is_hovered { new_hovered = Some(idx); new_preview_pos = Some(rect.right_top()); }
-                if response.clicked() { new_selected = Some(idx); }
-                if response.secondary_clicked() { new_context_row = Some(idx); }
-                
-                let mut child_ui = ui.child_ui(rect, Layout::left_to_right(Align::Center), None);
-                child_ui.add_space(8.0);
-                
-                let result = &self.results[idx];
-                child_ui.add(Image::new(self.icons.get_for_path(ui.ctx(), &result.name, result.is_dir)).max_size(Vec2::new(14.0, 14.0)));
-                child_ui.add_space(8.0);
-                
-                let (tag_rect, _) = child_ui.allocate_exact_size(Vec2::new(22.0, 14.0), Sense::hover());
-                child_ui.painter().rect_stroke(tag_rect, 1.0, Stroke::new(1.0, BORDER2));
-                child_ui.painter().text(tag_rect.center(), Align2::CENTER_CENTER, &result.drive[..2], FontId::new(9.0, FontFamily::Name("cond".into())), TEXT3);
-                child_ui.add_space(6.0);
-                
-                child_ui.add_sized([260.0, 20.0], Label::new(RichText::new(&result.name).font(FontId::new(12.5, FontFamily::Name("mono".into()))).color(TEXT)).truncate());
-                child_ui.add_sized([child_ui.available_width() - 230.0, 20.0], Label::new(RichText::new(&result.full_path).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(TEXT3)).truncate());
-                
-                child_ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.add_space(16.0);
-                    ui.add_sized([130.0, 20.0], Label::new(RichText::new(format_timestamp(result.timestamp)).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(TEXT3)));
-                    ui.add_sized([80.0, 20.0], Label::new(RichText::new(format_size(result.size)).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(TEXT2)));
-                });
-            }
+            ui.with_layout(Layout::top_down(Align::Min), |ui| {
+                for idx in 0..results_to_show {
+                    let is_selected = self.selected_rows.contains(&idx);
+                    let (rect, response) = ui.allocate_at_least(Vec2::new(available_width, 30.0), Sense::click());
+                    let is_hovered = response.hovered();
+
+                    let bg = if is_selected { Color32::from_rgba_unmultiplied(255, 140, 0, 25) } else if is_hovered { BG3 } else if idx % 2 == 0 { BG } else { BG2 };
+                    ui.painter().rect_filled(rect, Rounding::ZERO, bg);
+                    if is_selected || is_hovered { ui.painter().line_segment([rect.left_top(), rect.left_bottom()], Stroke::new(3.0, ACCENT)); }
+
+                    if is_hovered { new_hovered = Some(idx); new_preview_pos = Some(rect.right_top()); }
+                    if response.clicked() { new_selected = Some(idx); }
+                    if response.secondary_clicked() { new_context_row = Some(idx); }
+
+                    let mut child_ui = ui.child_ui(rect, Layout::left_to_right(Align::Center), None);
+                    child_ui.add_space(8.0);
+
+                    let result = &self.results[idx];
+                    child_ui.add(Image::new(self.icons.get_for_path(ui.ctx(), &result.name, result.is_dir)).max_size(Vec2::new(14.0, 14.0)));
+                    child_ui.add_space(8.0);
+
+                    let (tag_rect, _) = child_ui.allocate_exact_size(Vec2::new(22.0, 14.0), Sense::hover());
+                    child_ui.painter().rect_stroke(tag_rect, 1.0, Stroke::new(1.0, BORDER2));
+                    child_ui.painter().text(tag_rect.center(), Align2::CENTER_CENTER, &result.drive[..2], FontId::new(9.0, FontFamily::Name("cond".into())), TEXT3);
+                    child_ui.add_space(6.0);
+
+                    child_ui.add_sized([260.0, 20.0], Label::new(RichText::new(&result.name).font(FontId::new(12.5, FontFamily::Name("mono".into()))).color(TEXT)).truncate());
+
+                    let remaining_w = child_ui.available_width();
+                    child_ui.add_sized([remaining_w - 80.0 - 130.0 - 32.0, 20.0], Label::new(RichText::new(&result.full_path).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(TEXT3)).truncate());
+
+                    child_ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.add_space(16.0);
+                        ui.add_sized([130.0, 20.0], Label::new(RichText::new(format_timestamp(result.timestamp)).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(TEXT3)));
+                        ui.add_sized([80.0, 20.0], Label::new(RichText::new(format_size(result.size)).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(TEXT2)));
+                    });
+                }
+            });
         });
 
         self.hovered_row = new_hovered;
@@ -885,7 +899,14 @@ impl FerrexApp {
 
 fn header_button(ui: &mut egui::Ui, text: &str, width: f32, active: bool) -> bool {
     let color = if active { ACCENT } else { TEXT3 };
-    let response = ui.add_sized([width, 20.0], egui::Button::new(RichText::new(text).font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(color).extra_letter_spacing(1.5)).fill(Color32::TRANSPARENT));
+    let btn = egui::Button::new(RichText::new(text).font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(color).extra_letter_spacing(1.5))
+        .fill(Color32::TRANSPARENT);
+
+    let (rect, response) = ui.allocate_at_least(Vec2::new(width, 20.0), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let mut child_ui = ui.child_ui(rect, Layout::left_to_right(Align::Center), None);
+        child_ui.add(btn);
+    }
     response.clicked()
 }
 
