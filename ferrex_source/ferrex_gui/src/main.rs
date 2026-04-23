@@ -182,10 +182,8 @@ struct FerrexApp {
     mem_usage_mb: f32,
     cpu_usage: f32,
     context_menu_row: Option<usize>,
-    show_filters: bool,
     #[cfg(windows)]
     tray: Option<tray_icon::TrayIcon>,
-    auto_startup: bool,
     is_pinned: bool,
 }
 
@@ -226,10 +224,8 @@ impl FerrexApp {
             mem_usage_mb: 0.0,
             cpu_usage: 0.0,
             context_menu_row: None,
-            show_filters: false,
             #[cfg(windows)]
             tray: None,
-            auto_startup: false,
             is_pinned: false,
         };
 
@@ -322,8 +318,10 @@ impl FerrexApp {
 
     #[cfg(windows)]
     fn setup_tray(&mut self) {
+        let icon = load_icon();
         let tray = tray_icon::TrayIconBuilder::new()
             .with_tooltip("Ferrex")
+            .with_icon(icon)
             .build()
             .ok();
         self.tray = tray;
@@ -464,9 +462,8 @@ impl eframe::App for FerrexApp {
             .show(ctx, |ui| { self.draw_drive_selector(ui, ctx); });
 
         egui::TopBottomPanel::top("searchbar_area").frame(Frame::none().fill(PANEL)).show(ctx, |ui| {
-            Frame::none().inner_margin(Margin::symmetric(16.0, 5.0)).show(ui, |ui| {
+            Frame::none().inner_margin(Margin::symmetric(16.0, 8.0)).show(ui, |ui| {
                 self.draw_search_bar(ui, ctx);
-                if self.show_filters { ui.add_space(8.0); self.draw_filter_strip(ui, ctx); }
             });
             if self.is_scanning { 
                 ui.add(egui::ProgressBar::new(self.scan_progress)
@@ -522,7 +519,7 @@ impl FerrexApp {
             
             // 记录总数显示
             let total_records: usize = self.stores.iter().map(|s| s.record_count).sum();
-            ui.label(RichText::new(format!("READY — {}", format_number(total_records))).font(FontId::new(9.0, FontFamily::Name("cond".into()))).color(TEXT3));
+            ui.label(RichText::new(format!("READY — {}", format_number(total_records))).font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3));
 
             // 中间拖拽区域
             let drag_rect = ui.available_rect_before_wrap();
@@ -661,59 +658,51 @@ impl FerrexApp {
     }
 
     fn draw_search_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 0.0;
-            let (icon_rect, _) = ui.allocate_exact_size(Vec2::new(36.0, 36.0), Sense::hover());
-            ui.painter().rect_filled(icon_rect, Rounding::ZERO, BG2);
-            ui.painter().rect_stroke(icon_rect, Rounding::ZERO, Stroke::new(1.0, BORDER2));
-            let c = Pos2::new(icon_rect.center().x - 2.0, icon_rect.center().y - 2.0);
-            ui.painter().circle_stroke(c, 5.5, Stroke::new(1.5, TEXT3));
-            ui.painter().line_segment([Pos2::new(c.x + 4.0, c.y + 4.0), Pos2::new(c.x + 8.0, c.y + 8.0)], Stroke::new(1.5, TEXT3));
-            
-            let search_edit = TextEdit::singleline(&mut self.query)
-                .font(FontId::new(13.0, FontFamily::Name("mono".into())))
-                .hint_text(RichText::new("文件名 / 关键词...").color(TEXT3))
-                .frame(true)
-                .text_color(TEXT);
+        let frame = Frame::none().fill(BG2).stroke(Stroke::new(1.0, BORDER2)).rounding(Rounding::ZERO);
+        frame.show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
 
-            let search_response = ui.add_sized(Vec2::new(ui.available_width() - 80.0 - 24.0 - 80.0 - 100.0, 36.0), search_edit);
-            
-            let (dot_rect, _) = ui.allocate_exact_size(Vec2::new(24.0, 36.0), Sense::hover());
-            ui.painter().rect_filled(dot_rect, Rounding::ZERO, BG3);
-            ui.painter().text(dot_rect.center(), Align2::CENTER_CENTER, ".", FontId::new(16.0, FontFamily::Name("mono".into())), ACCENT);
-            
-            let ext_response = ui.add_sized(Vec2::new(80.0, 36.0), TextEdit::singleline(&mut self.ext_filter).font(FontId::new(13.0, FontFamily::Name("mono".into()))).hint_text(RichText::new("扩展名").color(TEXT3)).frame(true).text_color(TEXT));
-            
-            ui.add_space(10.0);
-            if ui.add(egui::Button::new(RichText::new("搜索").font(FontId::new(13.0, FontFamily::Name("cond".into()))).color(Color32::BLACK).strong()).fill(ACCENT).min_size(Vec2::new(70.0, 36.0))).clicked() || search_response.changed() || ext_response.changed() { self.run_search(ctx); }
-            ui.add_space(8.0);
-            if ui.add(egui::Button::new(RichText::new("过滤器").font(FontId::new(11.0, FontFamily::Name("cond".into()))).color(if self.show_filters { ACCENT } else { TEXT3 })).stroke(Stroke::new(1.0, if self.show_filters { ACCENT } else { BORDER2 })).fill(Color32::TRANSPARENT)).clicked() { self.show_filters = !self.show_filters; }
-        });
-    }
+                // 搜索图标
+                let (icon_rect, _) = ui.allocate_exact_size(Vec2::new(36.0, 34.0), Sense::hover());
+                let c = Pos2::new(icon_rect.center().x - 2.0, icon_rect.center().y - 2.0);
+                ui.painter().circle_stroke(c, 5.5, Stroke::new(1.5, TEXT3));
+                ui.painter().line_segment([Pos2::new(c.x + 4.0, c.y + 4.0), Pos2::new(c.x + 8.0, c.y + 8.0)], Stroke::new(1.5, TEXT3));
 
-    fn draw_filter_strip(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 12.0;
-            if filter_toggle(ui, "正则", &mut self.use_regex) { self.run_search(ctx); }
-            ui.label(RichText::new("大小 ≥").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3));
-            if ui.add(TextEdit::singleline(&mut self.min_size_str).desired_width(60.0)).changed() { self.run_search(ctx); }
-            ui.label(RichText::new("≤").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3));
-            if ui.add(TextEdit::singleline(&mut self.max_size_str).desired_width(60.0)).changed() { self.run_search(ctx); }
-            
-            ui.label(RichText::new("日期 从").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3));
-            if ui.add(TextEdit::singleline(&mut self.date_from_str).hint_text("YYYY-MM-DD").desired_width(80.0)).changed() { self.run_search(ctx); }
-            ui.label(RichText::new("至").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3));
-            if ui.add(TextEdit::singleline(&mut self.date_to_str).hint_text("YYYY-MM-DD").desired_width(80.0)).changed() { self.run_search(ctx); }
+                // 搜索输入框
+                let search_edit = TextEdit::singleline(&mut self.query)
+                    .font(FontId::new(13.0, FontFamily::Name("mono".into())))
+                    .hint_text(RichText::new("文件名 / 关键词...").color(TEXT3))
+                    .frame(false) // 禁用内建边框以使用统一 Frame
+                    .margin(Margin::symmetric(4.0, 8.0)) // 增加垂直边距以实现居中感
+                    .text_color(TEXT);
 
-            if filter_toggle(ui, "隐藏", &mut self.show_hidden) { self.run_search(ctx); }
-            if filter_toggle(ui, "系统", &mut self.show_system) { self.run_search(ctx); }
-            if filter_toggle(ui, "仅目录", &mut self.dirs_only) { self.run_search(ctx); }
-            
-            ui.add_space(8.0);
-            if filter_toggle(ui, "开机自启", &mut self.auto_startup) {
-                #[cfg(windows)]
-                set_startup(self.auto_startup);
-            }
+                let search_response = ui.add_sized(Vec2::new(ui.available_width() - 80.0 - 24.0 - 100.0, 34.0), search_edit);
+
+                // 分隔符点号
+                let (dot_rect, _) = ui.allocate_exact_size(Vec2::new(24.0, 34.0), Sense::hover());
+                ui.painter().rect_filled(dot_rect, Rounding::ZERO, BG3);
+                ui.painter().text(dot_rect.center(), Align2::CENTER_CENTER, ".", FontId::new(16.0, FontFamily::Name("mono".into())), ACCENT);
+
+                // 扩展名输入框
+                let ext_edit = TextEdit::singleline(&mut self.ext_filter)
+                    .font(FontId::new(13.0, FontFamily::Name("mono".into())))
+                    .hint_text(RichText::new("扩展名").color(TEXT3))
+                    .frame(false)
+                    .margin(Margin::symmetric(4.0, 8.0))
+                    .text_color(TEXT);
+                let ext_response = ui.add_sized(Vec2::new(80.0, 34.0), ext_edit);
+
+                // 搜索按钮
+                ui.add_space(1.0); // 极小间距
+                let search_btn = egui::Button::new(RichText::new("搜索").font(FontId::new(13.0, FontFamily::Name("cond".into()))).color(Color32::BLACK).strong())
+                    .fill(ACCENT)
+                    .rounding(Rounding::ZERO);
+
+                if ui.add_sized(Vec2::new(80.0, 34.0), search_btn).clicked() || search_response.changed() || ext_response.changed() {
+                    self.run_search(ctx);
+                }
+            });
         });
     }
 
@@ -921,13 +910,6 @@ fn stat_item(ui: &mut egui::Ui, label: &str, value: &str) {
     ui.label(RichText::new(value).font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT2).strong()); 
 }
 
-fn filter_toggle(ui: &mut egui::Ui, text: &str, value: &mut bool) -> bool {
-    let color = if *value { ACCENT } else { TEXT3 };
-    let btn = egui::Button::new(RichText::new(text).font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(color))
-        .fill(Color32::TRANSPARENT).stroke(Stroke::new(1.0, if *value { ACCENT } else { BORDER2 })).rounding(Rounding::ZERO);
-    if ui.add(btn).clicked() { *value = !*value; true } else { false }
-}
-
 fn preview_row(ui: &mut egui::Ui, label: &str, value: &str) { 
     ui.horizontal(|ui| { 
         ui.label(RichText::new(label).font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3)); 
@@ -977,6 +959,19 @@ fn open_properties(path: &str) {
         };
         let _ = ShellExecuteExW(&mut { info });
     }
+}
+
+#[cfg(windows)]
+fn load_icon() -> tray_icon::Icon {
+    let (icon_rgba, icon_width, icon_height) = {
+        let image = image::open("ferrex.png")
+            .expect("Failed to open ferrex.png")
+            .into_rgba8();
+        let (width, height) = image.dimensions();
+        let rgba = image.into_raw();
+        (rgba, width, height)
+    };
+    tray_icon::Icon::from_rgba(icon_rgba, icon_width, icon_height).expect("Failed to create tray icon")
 }
 
 #[cfg(windows)]
