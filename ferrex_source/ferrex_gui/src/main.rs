@@ -186,6 +186,7 @@ struct FerrexApp {
     #[cfg(windows)]
     tray: Option<tray_icon::TrayIcon>,
     auto_startup: bool,
+    is_pinned: bool,
 }
 
 impl FerrexApp {
@@ -229,6 +230,7 @@ impl FerrexApp {
             #[cfg(windows)]
             tray: None,
             auto_startup: false,
+            is_pinned: false,
         };
 
         app.hardware_ok = app.verify_hardware_wmi();
@@ -452,8 +454,8 @@ impl eframe::App for FerrexApp {
         }
 
         egui::TopBottomPanel::top("titlebar")
-            .exact_height(44.0)
-            .frame(Frame::none().fill(PANEL).inner_margin(Margin::symmetric(16.0, 0.0)))
+            .exact_height(32.0)
+            .frame(Frame::none().fill(PANEL).inner_margin(Margin::symmetric(8.0, 0.0)))
             .show(ctx, |ui| { self.draw_titlebar(ui); });
 
         egui::TopBottomPanel::top("drives")
@@ -504,20 +506,116 @@ impl FerrexApp {
     }
 
     fn draw_titlebar(&mut self, ui: &mut egui::Ui) {
+        let rect = ui.available_rect_before_wrap();
+        // Bottom border to match reference version's physical cutting feeling
+        ui.painter().line_segment(
+            [rect.left_bottom() + Vec2::new(-8.0, 0.0), rect.right_bottom() + Vec2::new(8.0, 0.0)],
+            Stroke::new(1.0, BORDER2)
+        );
+
+        let response = ui.interact(rect, ui.id(), Sense::click_and_drag());
+        if response.drag_started_by(egui::PointerButton::Primary) {
+            ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
+        }
+
         ui.horizontal_centered(|ui| {
-            ui.add(egui::Image::new(egui::include_image!("../../ferrex.png")).max_size(Vec2::new(22.0, 22.0)));
+            ui.add(egui::Image::new(egui::include_image!("../../ferrex.png")).max_size(Vec2::new(18.0, 18.0)));
             ui.add_space(8.0);
-            ui.label(RichText::new("FERREX").font(FontId::new(18.0, FontFamily::Name("cond".into()))).color(ACCENT).extra_letter_spacing(2.5));
-            ui.add_space(14.0);
-            ui.label(RichText::new("NTFS INDEXER").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3));
+            ui.label(RichText::new("FERREX").font(FontId::new(14.0, FontFamily::Name("cond".into()))).color(ACCENT).extra_letter_spacing(1.5));
+            ui.add_space(12.0);
+
+            let total_records: usize = self.stores.iter().map(|s| s.record_count).sum();
+            ui.label(RichText::new(format!("READY — {}", format_number(total_records))).font(FontId::new(9.0, FontFamily::Name("cond".into()))).color(TEXT3));
+
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let total_records: usize = self.stores.iter().map(|s| s.record_count).sum();
-                let dot_pos = ui.available_rect_before_wrap().right_center() - Vec2::new(10.0, 0.0);
-                ui.painter().circle_filled(dot_pos, 4.0, if total_records > 0 { SUCCESS } else { TEXT3 });
-                ui.add_space(18.0);
-                ui.label(RichText::new(format!("索引就绪 — {:>10} 条记录", format_number(total_records))).font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3));
+                ui.spacing_mut().item_spacing.x = 4.0;
+
+                // Close Button
+                let close_response = self.title_bar_button(ui, "close", Color32::from_rgb(232, 17, 35), true);
+                if close_response.clicked() {
+                    ui.ctx().send_viewport_cmd(ViewportCommand::Close);
+                }
+
+                // Maximize Button
+                let max_response = self.title_bar_button(ui, "max", Color32::TRANSPARENT, false);
+                if max_response.clicked() {
+                    let is_maximized = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
+                    if is_maximized {
+                        ui.ctx().send_viewport_cmd(ViewportCommand::Maximized(false));
+                    } else {
+                        ui.ctx().send_viewport_cmd(ViewportCommand::Maximized(true));
+                    }
+                }
+
+                // Minimize Button
+                let min_response = self.title_bar_button(ui, "min", Color32::TRANSPARENT, false);
+                if min_response.clicked() {
+                    ui.ctx().send_viewport_cmd(ViewportCommand::Minimized(true));
+                }
+
+                // Pin Button
+                let pin_color = if self.is_pinned { Color32::from_rgb(255, 85, 28) } else { TEXT };
+                let pin_response = self.title_bar_button_custom(ui, "pin", Color32::TRANSPARENT, false, pin_color);
+                if pin_response.clicked() {
+                    self.is_pinned = !self.is_pinned;
+                    if self.is_pinned {
+                        ui.ctx().send_viewport_cmd(ViewportCommand::WindowLevel(egui::WindowLevel::AlwaysOnTop));
+                    } else {
+                        ui.ctx().send_viewport_cmd(ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
+                    }
+                }
             });
         });
+    }
+
+    fn title_bar_button(&self, ui: &mut egui::Ui, icon: &str, base_fill: Color32, is_close: bool) -> egui::Response {
+        self.title_bar_button_custom(ui, icon, base_fill, is_close, TEXT)
+    }
+
+    fn title_bar_button_custom(&self, ui: &mut egui::Ui, icon: &str, base_fill: Color32, is_close: bool, icon_color: Color32) -> egui::Response {
+        let (rect, response) = ui.allocate_at_least(Vec2::new(24.0, 24.0), Sense::click());
+
+        let fill = if response.is_pointer_button_down_on() {
+            if is_close { Color32::from_rgb(165, 0, 0) } else { Color32::from_rgba_unmultiplied(255, 255, 255, 51) }
+        } else if response.hovered() {
+            if is_close { Color32::from_rgb(241, 112, 122) } else { Color32::from_rgba_unmultiplied(255, 255, 255, 25) }
+        } else {
+            base_fill
+        };
+
+        if fill != Color32::TRANSPARENT {
+            ui.painter().rect_filled(rect, Rounding::same(4.0), fill);
+        }
+
+        let stroke = Stroke::new(1.2, icon_color);
+        let center = rect.center();
+        let size = 8.0;
+
+        match icon {
+            "close" => {
+                ui.painter().line_segment([center - Vec2::splat(size/2.0), center + Vec2::splat(size/2.0)], stroke);
+                ui.painter().line_segment([center + Vec2::new(size/2.0, -size/2.0), center + Vec2::new(-size/2.0, size/2.0)], stroke);
+            }
+            "max" => {
+                let is_maximized = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
+                if is_maximized {
+                    ui.painter().rect_stroke(egui::Rect::from_center_size(center + Vec2::new(1.0, -1.0), Vec2::splat(size-2.0)), Rounding::ZERO, stroke);
+                    ui.painter().rect_stroke(egui::Rect::from_center_size(center + Vec2::new(-1.0, 1.0), Vec2::splat(size-2.0)), Rounding::ZERO, stroke);
+                } else {
+                    ui.painter().rect_stroke(egui::Rect::from_center_size(center, Vec2::splat(size)), Rounding::ZERO, stroke);
+                }
+            }
+            "min" => {
+                ui.painter().line_segment([center - Vec2::new(size/2.0, 0.0), center + Vec2::new(size/2.0, 0.0)], stroke);
+            }
+            "pin" => {
+                ui.painter().circle_stroke(center, 2.5, stroke);
+                ui.painter().line_segment([center + Vec2::new(0.0, 2.5), center + Vec2::new(0.0, 5.0)], stroke);
+            }
+            _ => {}
+        }
+
+        response
     }
 
     fn draw_drive_selector(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -888,6 +986,7 @@ fn set_startup(enabled: bool) {
 
 fn setup_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
+    #[allow(unused_mut)]
     let mut msyh_loaded = false;
 
     #[cfg(windows)]
@@ -1001,7 +1100,11 @@ fn spawn_scan(vol: String, tx: std::sync::mpsc::Sender<ScanProgress>) {
 
 fn main() -> eframe::Result<()> {
     let native_options = eframe::NativeOptions { 
-        viewport: egui::ViewportBuilder::default().with_inner_size([1000.0, 700.0]).with_min_inner_size([800.0, 500.0]).with_title("Ferrex"), 
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([1000.0, 700.0])
+            .with_min_inner_size([800.0, 500.0])
+            .with_title("Ferrex")
+            .with_decorations(false),
         ..Default::default() 
     };
     eframe::run_native(
