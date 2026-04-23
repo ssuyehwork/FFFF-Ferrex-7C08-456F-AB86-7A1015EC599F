@@ -2,6 +2,7 @@
 
 use eframe::egui;
 use egui::Color32;
+use egui_extras::install_image_loaders;
 use indexer::{acquire_privileges, get_ntfs_volumes, MftScanner};
 use storage::{IndexStore, MappedIndex};
 use search::Searcher;
@@ -10,8 +11,9 @@ use std::collections::{HashMap, HashSet};
 use std::process::Command;
 use std::time::Instant;
 
-const PANEL: Color32 = Color32::from_rgb(13, 16, 20);
+// --- Colors from AGENTS-2.md ---
 const BG: Color32 = Color32::from_rgb(7, 9, 11);
+const PANEL: Color32 = Color32::from_rgb(13, 16, 20);
 const BG2: Color32 = Color32::from_rgb(17, 21, 25);
 const BG3: Color32 = Color32::from_rgb(22, 27, 32);
 const BORDER2: Color32 = Color32::from_rgb(37, 46, 55);
@@ -22,6 +24,7 @@ const TEXT3: Color32 = Color32::from_rgb(61, 80, 96);
 const SUCCESS: Color32 = Color32::from_rgb(46, 204, 113);
 const DANGER: Color32 = Color32::from_rgb(231, 76, 60);
 
+// --- Icon Cache Pool ---
 struct IconCache {
     map: HashMap<&'static str, egui::ImageSource<'static>>,
 }
@@ -29,6 +32,7 @@ struct IconCache {
 impl IconCache {
     fn new() -> Self {
         let mut map = HashMap::new();
+        // Load all icons from assets
         map.insert("file", egui::ImageSource::Bytes {
             uri: std::borrow::Cow::Borrowed("bytes://icon_file.svg"),
             bytes: egui::load::Bytes::Static(include_bytes!("../assets/icons/file.svg")),
@@ -89,8 +93,10 @@ struct FerrexApp {
 
 impl FerrexApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        install_image_loaders(&cc.egui_ctx);
+
+        // --- IRON RULE: Only Microsoft YaHei font ---
         let mut fonts = egui::FontDefinitions::default();
-        // --- IRON RULE: Only Microsoft YaHei ---
         fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().clear();
         fonts.families.get_mut(&egui::FontFamily::Monospace).unwrap().clear();
 
@@ -115,7 +121,7 @@ impl FerrexApp {
             results: Vec::new(),
             stores: Vec::new(),
             active_drives: HashSet::new(),
-            status_text: "初始化系统...".to_string(),
+            status_text: "正在初始化系统...".to_string(),
             total_records: 0,
             last_search_ms: 0.0,
             icons: IconCache::new(),
@@ -152,7 +158,7 @@ impl FerrexApp {
 
     fn load_or_build_all_indices(&mut self) {
         if let Err(_) = acquire_privileges() {
-            self.status_text = "权限不足，请以管理员运行".to_string();
+            self.status_text = "权限不足，请确认以管理员身份运行。".to_string();
             return;
         }
         let volumes = get_ntfs_volumes();
@@ -179,7 +185,7 @@ impl FerrexApp {
                 store.usn_watermark = mapped.usn_watermark;
                 store.volume_serial = mapped.volume_serial;
             } else {
-                // 开箱即用：如果无索引，自动扫描
+                // 开箱即用：如果未发现索引，自动开始扫描
                 if let Ok(scanner) = MftScanner::new(&vol) {
                     if let Ok(raw_entries) = scanner.scan() {
                         for entry in raw_entries {
@@ -193,7 +199,6 @@ impl FerrexApp {
                             store.name_offsets.push(offset);
                             store.flags.push(entry.flags);
                         }
-                        // 尝试保存索引以备下次使用
                         let _ = storage::save_index(&idx_path, &store);
                     }
                 }
@@ -207,7 +212,7 @@ impl FerrexApp {
                 self.total_records += count;
             }
         }
-        self.status_text = if self.stores.is_empty() { "未发现可用驱动器".to_string() } else { format!("就绪 - {} 卷", self.stores.len()) };
+        self.status_text = if self.stores.is_empty() { "未发现可用驱动器" .to_string() } else { format!("就绪 - {} 卷", self.stores.len()) };
     }
 
     fn run_search(&mut self) {
