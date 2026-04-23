@@ -386,9 +386,6 @@ impl eframe::App for FerrexApp {
                     ui.add_space(8.0);
                     ui.label(RichText::new("FERREX").color(ACCENT).size(22.0).strong().extra_letter_spacing(0.5));
 
-                    ui.add_space(14.0);
-                    ui.label(RichText::new("NTFS INDEXER").color(TEXT3).size(10.0));
-
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let dot_color = if self.total_records > 0 { SUCCESS } else { TEXT3 };
                         ui.colored_label(dot_color, "●");
