@@ -310,7 +310,7 @@ pub fn spawn_usn_watcher(volume: &str) -> Result<Receiver<UsnEvent>> {
                     }
                 }
             }
-        }).map_err(|e| Error::new(E_FAIL, HSTRING::from(e.to_string())))?;
+        }).map_err(|e| Error::new(E_FAIL, HSTRING::from(format!("{}", e))))?;
 
     Ok(rx)
 }
