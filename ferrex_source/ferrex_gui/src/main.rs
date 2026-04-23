@@ -370,7 +370,12 @@ impl eframe::App for FerrexApp {
                         let angle = std::f32::consts::PI / 180.0 * (60.0 * i as f32 - 30.0);
                         egui::pos2(center.x + r * angle.cos(), center.y + r * angle.sin())
                     }).collect();
-                    painter.add(egui::Shape::closed_line(points, egui::Stroke::new(1.5, ACCENT)));
+                    // Draw Cube Hexagon (Logo with internal lines for 3D effect)
+                    painter.add(egui::Shape::closed_line(points.clone(), egui::Stroke::new(1.5, ACCENT)));
+                    // Draw Y-shape internal lines (cube effect)
+                    for i in [1, 3, 5] {
+                        painter.line_segment([center, points[i]], egui::Stroke::new(1.2, ACCENT));
+                    }
 
                     ui.add_space(8.0);
                     ui.label(RichText::new("FERREX").color(ACCENT).size(18.0).strong().extra_letter_spacing(2.5));
