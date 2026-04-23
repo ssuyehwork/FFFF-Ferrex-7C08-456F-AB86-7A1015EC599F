@@ -749,7 +749,7 @@ impl FerrexApp {
     fn handle_hotkey(&self, ctx: &egui::Context) {
         unsafe {
             let mut msg = MSG::default();
-            while PeekMessageW(&mut msg, HWND(0), WM_HOTKEY, WM_HOTKEY, PM_REMOVE).is_ok() {
+            while PeekMessageW(&mut msg, HWND(0), WM_HOTKEY, WM_HOTKEY, PM_REMOVE).as_bool() {
                 if msg.wParam.0 == 1001 {
                     ctx.send_viewport_cmd(ViewportCommand::Focus);
                     ctx.send_viewport_cmd(ViewportCommand::Visible(true));
