@@ -61,7 +61,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     store.flags.push(entry.flags);
                 }
 
-                let idx_path = format!("{}_drive.idx", vol.chars().next().unwrap().to_lowercase());
+                let idx_path = format!("../ferrex_Build/{}_drive.idx", vol.chars().next().unwrap().to_lowercase());
                 save_index(&idx_path, &store)?;
                 println!("Successfully saved index to {}", idx_path);
             }
@@ -71,7 +71,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut loaded_stores = Vec::new();
 
             for d in drives {
-                let idx_path = format!("{}_drive.idx", d);
+                let idx_path = format!("../ferrex_Build/{}_drive.idx", d);
                 if Path::new(&idx_path).exists() {
                     if let Ok(mapped) = MappedIndex::load(&idx_path) {
                         println!("Loaded index: {} ({} records)", idx_path, mapped.record_count);
@@ -107,7 +107,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             for (drive_letter, store) in loaded_stores {
                 let searcher = Searcher::new(
                     &store.frns, &store.parent_frns, &store.sizes, &store.timestamps,
-                    &store.flags, &store.name_offsets, &store.string_pool
+                    &store.flags, &store.name_offsets, &store.string_pool, &store.sorted_idx
                 );
                 let matches = searcher.search_with_ext(query, None);
 

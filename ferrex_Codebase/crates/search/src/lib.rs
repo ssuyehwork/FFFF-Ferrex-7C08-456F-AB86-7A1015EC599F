@@ -8,6 +8,7 @@ pub struct Searcher<'a> {
     pub flags: &'a [u32],
     pub name_offsets: &'a [u32],
     pub string_pool: &'a [u8],
+    pub sorted_idx: &'a [u32],
 }
 
 impl<'a> Searcher<'a> {
@@ -19,6 +20,7 @@ impl<'a> Searcher<'a> {
         flags: &'a [u32],
         name_offsets: &'a [u32],
         string_pool: &'a [u8],
+        sorted_idx: &'a [u32],
     ) -> Self {
         Self {
             frns,
@@ -28,6 +30,7 @@ impl<'a> Searcher<'a> {
             flags,
             name_offsets,
             string_pool,
+            sorted_idx,
         }
     }
 
