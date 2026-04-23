@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
-use indexer::{acquire_privileges, get_ntfs_volumes, MftScanner};
+use indexer::{acquire_privileges, get_ntfs_volumes, get_volume_serial, MftScanner};
 use storage::{save_index, LoadedIndex, FileRecord};
-use search::Searcher;
+use search::{Searcher, get_name_from_pool};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -44,11 +44,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             for vol in volumes {
                 println!("Scanning volume {}...", vol);
                 let scanner = MftScanner::new(&vol)?;
-                let raw_entries = scanner.scan()?;
+                let (raw_entries, next_usn) = scanner.scan()?;
                 println!("Found {} entries", raw_entries.len());
 
                 let mut string_pool = Vec::new();
                 let mut records = Vec::with_capacity(raw_entries.len());
+                let serial = get_volume_serial(&vol);
                 
                 for entry in raw_entries {
                     let name_offset = string_pool.len() as u32;
@@ -66,12 +67,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 let idx_path = format!("{}_drive.idx", vol.chars().next().unwrap().to_lowercase());
-                save_index(&idx_path, &records, &string_pool, 0, 0)?;
+                save_index(&idx_path, &records, &string_pool, next_usn, serial)?;
                 println!("Successfully saved index to {}", idx_path);
             }
         }
         Commands::Search { query } => {
-            // Priority 1: Do NOT rescan. Load existing .idx files.
             let drives = vec!['c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z'];
             let mut loaded_stores = Vec::new();
 
@@ -94,16 +94,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let records = store.get_records();
                 let pool = store.get_string_pool();
                 
-                // Rebuild FRN map for path resolution (O(N))
                 let mut frn_to_idx = HashMap::with_capacity(records.len());
                 for (i, rec) in records.iter().enumerate() {
                     frn_to_idx.insert(rec.frn, i);
                 }
 
-                let searcher = Searcher::new(records, pool);
+                let mut sorted_idx: Vec<u32> = (0..records.len() as u32).collect();
+                sorted_idx.sort_by_key(|&i| {
+                    let name = get_name_from_pool(pool, records[i as usize].name_offset as usize);
+                    name.to_lowercase()
+                });
+
+                let searcher = Searcher::new(records, pool, &sorted_idx);
                 let matches = searcher.search(query);
 
-                for &idx in &matches {
+                for idx in matches {
                     let full_path = resolve_full_path(&drive_letter, idx, records, pool, &frn_to_idx);
                     println!("{}", full_path);
                 }
@@ -129,17 +134,12 @@ fn resolve_full_path(
 
     while let Some(idx) = current_idx {
         let rec = &records[idx];
-        let offset = rec.name_offset as usize;
-        let name_slice = &pool[offset..];
-        let end = name_slice.iter().position(|&b| b == 0).unwrap_or(name_slice.len());
-        let name = String::from_utf8_lossy(&name_slice[..end]);
-        
-        path_parts.push(name.to_string());
+        let name = get_name_from_pool(pool, rec.name_offset as usize);
+        path_parts.push(name);
 
         let p_frn = rec.parent_frn;
         let c_frn = rec.frn;
 
-        // Root FRN is usually 5 on NTFS. stop if we reach root or cannot find parent.
         if c_frn == 5 || p_frn == 0 {
             break;
         }

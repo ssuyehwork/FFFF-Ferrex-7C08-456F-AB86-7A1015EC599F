@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::Write;
+use std::io::{Write, Result, Error, ErrorKind};
 use memmap2::Mmap;
 use crc32fast::Hasher;
 
@@ -8,8 +8,10 @@ pub const VERSION: u32 = 1;
 pub const HEADER_SIZE: usize = 48;
 pub const RECORD_SIZE: usize = 40;
 
+/// SoA Layout Record as defined in AGENTS.md Phase 4
+/// Total 40 bytes per record
 #[repr(C, packed)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Default)]
 pub struct FileRecord {
     pub frn: u64,
     pub parent_frn: u64,
@@ -25,7 +27,7 @@ pub fn save_index(
     string_pool: &[u8],
     usn_watermark: u64,
     volume_serial: u64,
-) -> std::io::Result<()> {
+) -> Result<()> {
     let record_count = records.len() as u64;
     let string_pool_size = string_pool.len() as u64;
     
@@ -51,7 +53,7 @@ pub fn save_index(
     // String Pool Block
     buffer.extend_from_slice(string_pool);
     
-    // Calculate CRC32 (Phase 4)
+    // Calculate CRC32
     let mut hasher = Hasher::new();
     hasher.update(&buffer);
     let checksum = hasher.finalize();
@@ -71,19 +73,26 @@ pub struct LoadedIndex {
     pub mmap: Mmap,
     pub record_count: usize,
     pub string_pool_offset: usize,
+    pub usn_watermark: u64,
+    pub volume_serial: u64,
 }
 
 impl LoadedIndex {
-    pub fn load(path: &str) -> std::io::Result<Self> {
+    pub fn load(path: &str) -> Result<Self> {
         let file = File::open(path)?;
         let mmap = unsafe { Mmap::map(&file)? };
         
         if mmap.len() < HEADER_SIZE {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "File too small"));
+            return Err(Error::new(ErrorKind::InvalidData, "File too small"));
         }
         
         if &mmap[0..4] != MAGIC {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid magic"));
+            return Err(Error::new(ErrorKind::InvalidData, "Invalid magic"));
+        }
+
+        let version = u32::from_le_bytes(mmap[0x04..0x08].try_into().unwrap());
+        if version != VERSION {
+            return Err(Error::new(ErrorKind::InvalidData, "Unsupported version"));
         }
         
         let stored_crc = u32::from_le_bytes(mmap[0x28..0x2C].try_into().unwrap());
@@ -94,15 +103,19 @@ impl LoadedIndex {
         let calculated_crc = hasher.finalize();
         
         if stored_crc != calculated_crc {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "CRC mismatch"));
+            return Err(Error::new(ErrorKind::InvalidData, "CRC mismatch"));
         }
         
         let record_count = u64::from_le_bytes(mmap[8..16].try_into().unwrap()) as usize;
+        let usn_watermark = u64::from_le_bytes(mmap[0x18..0x20].try_into().unwrap());
+        let volume_serial = u64::from_le_bytes(mmap[0x20..0x28].try_into().unwrap());
         
         Ok(Self {
             mmap,
             record_count,
             string_pool_offset: HEADER_SIZE + (record_count * RECORD_SIZE),
+            usn_watermark,
+            volume_serial,
         })
     }
     

@@ -65,6 +65,25 @@ pub fn get_ntfs_volumes() -> Vec<String> {
     volumes
 }
 
+pub fn get_volume_serial(volume: &str) -> u64 {
+    let drive_letter = format!("{}:\\", volume.trim_end_matches(':'));
+    unsafe {
+        let mut serial = 0u32;
+        if GetVolumeInformationW(
+            PCWSTR(HSTRING::from(&drive_letter).as_ptr()),
+            None,
+            None,
+            Some(&mut serial),
+            None,
+            None,
+        ).is_ok() {
+            serial as u64
+        } else {
+            0
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RawEntry {
     pub frn: u64,
@@ -77,12 +96,13 @@ pub struct RawEntry {
 
 pub struct MftScanner {
     volume_handle: HANDLE,
+    #[allow(dead_code)]
     volume_path: String,
 }
 
 impl MftScanner {
     pub fn new(volume: &str) -> Result<Self> {
-        let path = format!("\\\\.\\{}", volume);
+        let path = format!("\\\\.\\{}", volume.trim_end_matches('\\'));
         unsafe {
             let handle = CreateFileW(
                 &HSTRING::from(&path),
@@ -100,7 +120,7 @@ impl MftScanner {
         }
     }
 
-    pub fn scan(&self) -> Result<Vec<RawEntry>> {
+    pub fn scan(&self) -> Result<(Vec<RawEntry>, u64)> {
         let mut entries = Vec::new();
         unsafe {
             let mut bytes_returned = 0;
@@ -160,7 +180,7 @@ impl MftScanner {
                     entries.push(RawEntry {
                         frn: record.FileReferenceNumber,
                         parent_frn: record.ParentFileReferenceNumber,
-                        file_size: 0, 
+                        file_size: 0, // Enumerate USN data doesn't provide size easily
                         modified: record.TimeStamp as u64,
                         flags: record.FileAttributes,
                         name,
@@ -172,8 +192,8 @@ impl MftScanner {
                 if next_frn == 0 { break; }
                 med.StartFileReferenceNumber = next_frn;
             }
+            Ok((entries, journal_data.NextUsn as u64))
         }
-        Ok(entries)
     }
 }
 
@@ -190,8 +210,8 @@ pub struct UsnMonitor {
 }
 
 impl UsnMonitor {
-    pub fn new(volume: &str) -> Result<Self> {
-        let path = format!("\\\\.\\{}", volume);
+    pub fn new(volume: &str, start_usn: u64) -> Result<Self> {
+        let path = format!("\\\\.\\{}", volume.trim_end_matches('\\'));
         unsafe {
             let handle = CreateFileW(
                 &HSTRING::from(path),
@@ -219,7 +239,7 @@ impl UsnMonitor {
             Ok(Self {
                 volume_handle: handle,
                 journal_id: journal_data.UsnJournalID,
-                next_usn: journal_data.NextUsn,
+                next_usn: start_usn as i64,
             })
         }
     }
@@ -236,7 +256,7 @@ impl UsnMonitor {
                 UsnJournalID: self.journal_id,
             };
 
-            let mut buffer = [0u8; 8192];
+            let mut buffer = [0u8; 65536];
             let mut bytes_returned = 0;
 
             let res = DeviceIoControl(
@@ -275,6 +295,10 @@ impl UsnMonitor {
             }
         }
         Ok(entries)
+    }
+
+    pub fn get_next_usn(&self) -> u64 {
+        self.next_usn as u64
     }
 }
 
