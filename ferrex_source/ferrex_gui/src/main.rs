@@ -4,7 +4,7 @@ use eframe::egui;
 use egui::{
     Color32, RichText, FontId, FontFamily, Pos2, Vec2, Margin, Frame, Sense, Layout, 
     Align, Align2, Stroke, Rounding, Label, Image, TextEdit, ScrollArea, Area, 
-    Order, ViewportCommand, Id
+    Order, ViewportCommand, Id, Direction
 };
 use std::sync::Arc;
 use std::collections::{HashSet, HashMap};
