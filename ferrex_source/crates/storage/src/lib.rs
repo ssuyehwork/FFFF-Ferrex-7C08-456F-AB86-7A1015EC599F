@@ -65,6 +65,27 @@ impl IndexStore {
         }
         map
     }
+
+    /// Backwards compatibility for CLI
+    pub fn rebuild_lookups(&mut self) {
+        self.frn_to_idx = self.build_frn_map();
+        self.sorted_idx = self.build_sorted_idx();
+    }
+
+    /// Backwards compatibility for CLI
+    pub fn get_path(&self, index: usize) -> String {
+        let mut lru = lru::LruCache::new(std::num::NonZeroUsize::new(1).unwrap());
+        resolve_path(
+            "",
+            index as u32,
+            &self.frns,
+            &self.parent_frns,
+            &self.name_offsets,
+            &self.string_pool,
+            &self.frn_to_idx,
+            &mut lru
+        ).replace(":\\", "")
+    }
 }
 
 pub fn pool_get_name(pool: &[u8], offset: usize) -> String {

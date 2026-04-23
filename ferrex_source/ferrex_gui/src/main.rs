@@ -48,9 +48,9 @@ impl IconCache {
         Self { map }
     }
 
-    fn get_for_entry(&self, name: &str, is_dir: bool) -> &egui::ImageSource<'static> {
+    fn get_for_entry(&self, name: &str, is_dir: bool) -> egui::ImageSource<'static> {
         if is_dir {
-            return self.map.get("folder").unwrap_or(&self.map["file"]);
+            return self.map.get("folder").cloned().unwrap_or(self.map["file"].clone());
         }
         let ext = name.rsplit('.').next().unwrap_or("").to_lowercase();
         let key = match ext.as_str() {
@@ -59,7 +59,7 @@ impl IconCache {
             "doc" | "docx" | "pdf" | "txt" | "md" | "xls" | "xlsx" | "ppt" | "pptx" => "doc",
             _ => "file",
         };
-        self.map.get(key).unwrap_or(&self.map["file"])
+        self.map.get(key).cloned().unwrap_or(self.map["file"].clone())
     }
 }
 
@@ -87,7 +87,7 @@ enum SortColumn { Name, Path, Size, Date }
 
 enum ScanProgress {
     Progress { done: usize, total: usize },
-    Done { _drive: String, _idx_path: String },
+    Done { drive: String, idx_path: String },
     Error(String),
 }
 
@@ -203,7 +203,7 @@ impl FerrexApp {
             
             if let Ok(mapped) = MappedIndex::load(&idx_path) {
                 let mut store = IndexStore::new();
-                let records_ptr = unsafe { mapped.mmap.as_ptr().add(48) as *const storage::FileRecord };
+                let records_ptr = unsafe { mapped.mmap.as_ptr().add(storage::HEADER_SIZE) as *const storage::FileRecord };
                 for i in 0..mapped.record_count {
                     let rec = unsafe { &*records_ptr.add(i) };
                     store.frns.push(rec.frn);
@@ -304,12 +304,6 @@ impl FerrexApp {
         self.results = all_results;
         self.apply_sort();
         self.last_search_ms = t0.elapsed().as_secs_f64() * 1000.0;
-
-        if !self.query.is_empty() {
-            self.search_history.retain(|h| h != &self.query);
-            self.search_history.insert(0, self.query.clone());
-            self.search_history.truncate(20);
-        }
     }
 
     fn apply_sort(&mut self) {
@@ -364,7 +358,7 @@ impl eframe::App for FerrexApp {
 
         egui::CentralPanel::default().frame(Frame::none().fill(BG)).show(ctx, |ui| {
             self.draw_column_header(ui);
-            ui.add(egui::Separator::default().spacing(0.0).color(BORDER));
+            ui.add(egui::Separator::default().spacing(0.0));
             self.draw_results_list(ui);
             self.draw_hover_preview(ctx);
         });
@@ -395,7 +389,7 @@ impl FerrexApp {
             }).collect();
             painter.add(egui::Shape::closed_line(points, Stroke::new(1.5, ACCENT)));
             ui.add_space(8.0);
-            ui.label(RichText::new("FERREX").font(FontId::new(18.0, FontFamily::Name("cond".into()))).color(ACCENT).letter_spacing(2.5));
+            ui.label(RichText::new("FERREX").font(FontId::new(18.0, FontFamily::Name("cond".into()))).color(ACCENT).extra_letter_spacing(2.5));
             ui.add_space(14.0);
             ui.label(RichText::new("NTFS INDEXER").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -409,6 +403,7 @@ impl FerrexApp {
     }
 
     fn draw_drive_selector(&mut self, ui: &mut egui::Ui) {
+        let mut toggle_drive = None;
         ui.horizontal_centered(|ui| {
             ui.label(RichText::new("DRIVES").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3));
             ui.add_space(8.0);
@@ -418,13 +413,17 @@ impl FerrexApp {
                 let (bg, stroke_color, text_color) = if is_active { (Color32::from_rgba_unmultiplied(255, 140, 0, 30), ACCENT, ACCENT) } else { (BG3, BORDER2, TEXT2) };
                 let btn = egui::Button::new(RichText::new(&label).font(FontId::new(12.0, FontFamily::Name("cond".into()))).color(text_color)).fill(bg).stroke(Stroke::new(1.0, stroke_color)).rounding(Rounding::ZERO);
                 if ui.add(btn).clicked() {
-                    if is_active && self.active_drives.len() > 1 { self.active_drives.remove(&store.drive); }
-                    else if !is_active { self.active_drives.insert(store.drive.clone()); }
-                    self.run_search();
+                    toggle_drive = Some((store.drive.clone(), is_active));
                 }
                 ui.add_space(4.0);
             }
         });
+
+        if let Some((drive, was_active)) = toggle_drive {
+            if was_active && self.active_drives.len() > 1 { self.active_drives.remove(&drive); }
+            else if !was_active { self.active_drives.insert(drive); }
+            self.run_search();
+        }
     }
 
     fn draw_search_bar(&mut self, ui: &mut egui::Ui) {
@@ -436,11 +435,21 @@ impl FerrexApp {
             let c = Pos2::new(icon_rect.center().x - 2.0, icon_rect.center().y - 2.0);
             ui.painter().circle_stroke(c, 5.5, Stroke::new(1.5, TEXT3));
             ui.painter().line_segment([Pos2::new(c.x + 4.0, c.y + 4.0), Pos2::new(c.x + 8.0, c.y + 8.0)], Stroke::new(1.5, TEXT3));
-            let search_response = ui.add_sized(Vec2::new(ui.available_width() - 80.0 - 24.0 - 80.0 - 100.0, 36.0), TextEdit::singleline(&mut self.query).font(FontId::new(13.0, FontFamily::Name("mono".into()))).hint_text(RichText::new("文件名 / 关键词...").color(TEXT3)).frame(true).text_color(TEXT).cursor_color(ACCENT));
+
+            let search_edit = TextEdit::singleline(&mut self.query)
+                .font(FontId::new(13.0, FontFamily::Name("mono".into())))
+                .hint_text(RichText::new("文件名 / 关键词...").color(TEXT3))
+                .frame(true)
+                .text_color(TEXT);
+
+            let search_response = ui.add_sized(Vec2::new(ui.available_width() - 80.0 - 24.0 - 80.0 - 100.0, 36.0), search_edit);
+
             let (dot_rect, _) = ui.allocate_exact_size(Vec2::new(24.0, 36.0), Sense::hover());
             ui.painter().rect_filled(dot_rect, Rounding::ZERO, BG3);
             ui.painter().text(dot_rect.center(), Align2::CENTER_CENTER, ".", FontId::new(16.0, FontFamily::Name("mono".into())), ACCENT);
+
             let ext_response = ui.add_sized(Vec2::new(80.0, 36.0), TextEdit::singleline(&mut self.ext_filter).font(FontId::new(13.0, FontFamily::Name("mono".into()))).hint_text(RichText::new("扩展名").color(TEXT3)).frame(true).text_color(TEXT));
+
             ui.add_space(10.0);
             if ui.add(egui::Button::new(RichText::new("搜索").font(FontId::new(13.0, FontFamily::Name("cond".into()))).color(Color32::BLACK).strong()).fill(ACCENT).min_size(Vec2::new(70.0, 36.0))).clicked() || search_response.changed() || ext_response.changed() { self.run_search(); }
             ui.add_space(8.0);
@@ -506,7 +515,7 @@ impl FerrexApp {
                     if response.clicked() { new_selected = Some(idx); }
                     if response.secondary_clicked() { new_context_row = Some(idx); }
 
-                    let mut child_ui = ui.child_ui(rect, Layout::left_to_right(Align::Center));
+                    let mut child_ui = ui.child_ui(rect, Layout::left_to_right(Align::Center), None);
                     child_ui.add_space(8.0);
 
                     let result = &results[idx];
@@ -516,8 +525,8 @@ impl FerrexApp {
                     child_ui.painter().rect_stroke(tag_rect, 1.0, Stroke::new(1.0, BORDER2));
                     child_ui.painter().text(tag_rect.center(), Align2::CENTER_CENTER, &result.drive[..2], FontId::new(9.0, FontFamily::Name("cond".into())), TEXT3);
                     child_ui.add_space(6.0);
-                    child_ui.add_sized([260.0, 20.0], Label::new(RichText::new(&result.name).font(FontId::new(12.5, FontFamily::Name("mono".into()))).color(TEXT)).truncate(true));
-                    child_ui.add_sized([child_ui.available_width() - 230.0, 20.0], Label::new(RichText::new(&result.full_path).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(TEXT3)).truncate(true));
+                    child_ui.add_sized([260.0, 20.0], Label::new(RichText::new(&result.name).font(FontId::new(12.5, FontFamily::Name("mono".into()))).color(TEXT)).truncate());
+                    child_ui.add_sized([child_ui.available_width() - 230.0, 20.0], Label::new(RichText::new(&result.full_path).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(TEXT3)).truncate());
                     child_ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.add_space(16.0);
                         ui.add_sized([130.0, 20.0], Label::new(RichText::new(format_timestamp(result.timestamp)).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(TEXT3)));
@@ -536,12 +545,13 @@ impl FerrexApp {
         }
         if new_context_row.is_some() { self.context_menu_row = new_context_row; }
         if let Some(idx) = self.context_menu_row {
-            let full_path = self.results[idx].full_path.clone();
+            let result = self.results[idx].clone();
             let mut close_menu = false;
-            Area::new(Id::new("ctx")).fixed_pos(ui.input(|i| i.pointer.interact_pos().unwrap_or_default())).show(ui.ctx(), |ui| {
+            let menu_pos = ui.input(|i| i.pointer.interact_pos().unwrap_or_default());
+            Area::new(Id::new("ctx_menu")).fixed_pos(menu_pos).order(Order::Foreground).show(ui.ctx(), |ui| {
                 Frame::none().fill(PANEL).stroke(Stroke::new(1.0, BORDER2)).inner_margin(Margin::same(4.0)).show(ui, |ui| {
                     if ui.button("打开文件").clicked() { close_menu = true; }
-                    if ui.button("复制路径").clicked() { ui.ctx().output_mut(|o| o.copied_text = full_path.clone()); close_menu = true; }
+                    if ui.button("复制路径").clicked() { ui.ctx().copy_text(result.full_path.clone()); close_menu = true; }
                 });
             });
             if close_menu || ui.input(|i| i.pointer.any_click()) { self.context_menu_row = None; }
@@ -598,14 +608,15 @@ impl FerrexApp {
     fn update_stats(&mut self) {
         if self.last_sys_poll.elapsed() >= Duration::from_secs(2) {
             self.sysinfo.refresh_memory();
-            self.sysinfo.refresh_cpu_all();
+            self.sysinfo.refresh_all();
             self.mem_usage_mb = self.sysinfo.used_memory() as f32 / 1024.0 / 1024.0;
-            self.cpu_usage = self.sysinfo.global_cpu_info().cpu_usage();
+            self.cpu_usage = self.sysinfo.global_cpu_usage();
             self.last_sys_poll = Instant::now();
         }
     }
 
     fn handle_scan_progress(&mut self) {
+        let mut drop_rx = false;
         if let Some(ref rx) = self.scan_rx {
             while let Ok(msg) = rx.try_recv() {
                 match msg {
@@ -615,7 +626,7 @@ impl FerrexApp {
                     }
                     ScanProgress::Done { .. } => {
                         self.is_scanning = false;
-                        self.scan_rx = None;
+                        drop_rx = true;
                         self.status_text = "扫描完成".to_string();
                     }
                     ScanProgress::Error(e) => {
@@ -625,11 +636,12 @@ impl FerrexApp {
                 }
             }
         }
+        if drop_rx { self.scan_rx = None; }
     }
 }
 
 fn header_label(ui: &mut egui::Ui, text: &str, width: f32) {
-    ui.add_sized([width, 20.0], Label::new(RichText::new(text).font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3).letter_spacing(1.5)));
+    ui.add_sized([width, 20.0], Label::new(RichText::new(text).font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3).extra_letter_spacing(1.5)));
 }
 
 fn stat_item(ui: &mut egui::Ui, label: &str, value: &str) {
@@ -664,8 +676,12 @@ fn setup_fonts(ctx: &egui::Context) {
     }
 
     if msyh_loaded {
-        fonts.families.entry(FontFamily::Proportional).or_default().insert(0, "msyh".to_owned());
-        fonts.families.entry(FontFamily::Monospace).or_default().insert(0, "msyh".to_owned());
+        if let Some(v) = fonts.families.get_mut(&FontFamily::Proportional) {
+            v.insert(0, "msyh".to_owned());
+        }
+        if let Some(v) = fonts.families.get_mut(&FontFamily::Monospace) {
+            v.insert(0, "msyh".to_owned());
+        }
         fonts.families.insert(FontFamily::Name("cond".into()), vec!["msyh".to_owned()]);
         fonts.families.insert(FontFamily::Name("mono".into()), vec!["msyh".to_owned()]);
     } else {
@@ -719,7 +735,6 @@ fn parse_size(s: &str) -> Option<u64> {
     else if s.ends_with("m") { (&s[..s.len()-1], 1024*1024) }
     else if s.ends_with("g") { (&s[..s.len()-1], 1024*1024*1024) }
     else { (s.as_str(), 1) };
-
     num_part.trim().parse::<u64>().ok().map(|n| n * unit)
 }
 
@@ -771,8 +786,6 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "ferrex",
         native_options,
-        Box::new(|cc| {
-            Ok(Box::new(FerrexApp::new(cc)) as Box<dyn eframe::App>)
-        }),
+        Box::new(|cc| Ok(Box::new(FerrexApp::new(cc)) as Box<dyn eframe::App>)),
     )
 }
