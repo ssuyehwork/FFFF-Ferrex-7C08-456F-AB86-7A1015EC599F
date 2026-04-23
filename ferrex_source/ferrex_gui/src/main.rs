@@ -39,6 +39,9 @@ const TEXT: Color32 = Color32::from_rgb(200, 212, 220);
 const TEXT2: Color32 = Color32::from_rgb(122, 143, 158);
 const TEXT3: Color32 = Color32::from_rgb(61, 80, 96);
 
+const MENU_ROUNDING: Rounding = Rounding::same(6.0);
+const MENU_ITEM_HEIGHT: f32 = 28.0;
+
 struct IconCache {
     textures: HashMap<String, egui::TextureHandle>,
 }
@@ -678,15 +681,39 @@ impl FerrexApp {
             let result = self.results[idx].clone();
             let mut close_menu = false;
             let menu_pos = ui.input(|i| i.pointer.interact_pos().unwrap_or_default());
+
             Area::new(Id::new("ctx_menu")).fixed_pos(menu_pos).order(Order::Foreground).show(ui.ctx(), |ui| {
-                Frame::none().fill(PANEL).stroke(Stroke::new(1.0, BORDER2)).inner_margin(Margin::same(4.0)).show(ui, |ui| {
-                    ui.set_min_width(180.0);
-                    if menu_item(ui, "打开文件") { open_file(&result.full_path); close_menu = true; }
-                    if menu_item(ui, "在资源管理器中定位") { reveal_in_explorer(&result.full_path); close_menu = true; }
-                    if menu_item(ui, "复制路径") { ui.ctx().output_mut(|o| o.copied_text = result.full_path.clone()); close_menu = true; }
-                    if menu_item(ui, "复制文件名") { ui.ctx().output_mut(|o| o.copied_text = result.name.clone()); close_menu = true; }
-                    ui.separator();
-                    if menu_item(ui, "属性") { open_properties(&result.full_path); close_menu = true; }
+                Frame::none()
+                    .fill(PANEL)
+                    .stroke(Stroke::new(1.0, BORDER2))
+                    .rounding(MENU_ROUNDING)
+                    .shadow(egui::Shadow {
+                        blur: 10.0,
+                        color: Color32::from_black_alpha(120),
+                        ..Default::default()
+                    })
+                    .inner_margin(Margin::same(5.0))
+                    .show(ui, |ui| {
+                    ui.set_min_width(200.0);
+
+                    // Group 1: Actions
+                    if menu_item(ui, "打开文件", "Enter") { open_file(&result.full_path); close_menu = true; }
+                    if menu_item(ui, "在资源管理器中定位", "Ctrl+L") { reveal_in_explorer(&result.full_path); close_menu = true; }
+
+                    ui.add_space(2.0);
+                    ui.painter().line_segment([ui.cursor().left_top(), ui.cursor().right_top() + Vec2::new(ui.available_width(), 0.0)], Stroke::new(1.0, BG2));
+                    ui.add_space(2.0);
+
+                    // Group 2: Copy
+                    if menu_item(ui, "复制全路径", "Ctrl+Shift+C") { ui.ctx().output_mut(|o| o.copied_text = result.full_path.clone()); close_menu = true; }
+                    if menu_item(ui, "复制文件名", "Ctrl+C") { ui.ctx().output_mut(|o| o.copied_text = result.name.clone()); close_menu = true; }
+
+                    ui.add_space(2.0);
+                    ui.painter().line_segment([ui.cursor().left_top(), ui.cursor().right_top() + Vec2::new(ui.available_width(), 0.0)], Stroke::new(1.0, BG2));
+                    ui.add_space(2.0);
+
+                    // Group 3: Info
+                    if menu_item(ui, "属性", "Alt+Enter") { open_properties(&result.full_path); close_menu = true; }
                 });
             });
             if close_menu || (ui.input(|i| i.pointer.any_click()) && !ui.input(|i| i.pointer.secondary_down())) { self.context_menu_row = None; }
@@ -820,8 +847,40 @@ fn preview_row(ui: &mut egui::Ui, label: &str, value: &str) {
     }); 
 }
 
-fn menu_item(ui: &mut egui::Ui, label: &str) -> bool {
-    ui.add(egui::Button::new(RichText::new(label).font(FontId::new(11.0, FontFamily::Name("cond".into()))).color(TEXT2)).fill(Color32::TRANSPARENT)).clicked()
+fn menu_item(ui: &mut egui::Ui, label: &str, shortcut: &str) -> bool {
+    let (rect, response) = ui.allocate_at_least(Vec2::new(ui.available_width(), MENU_ITEM_HEIGHT), Sense::click());
+    let is_hovered = response.hovered();
+
+    // Hover Feedback with animation feeling (constant alpha for now as simple approach)
+    let bg_color = if is_hovered {
+        Color32::from_rgba_unmultiplied(255, 140, 0, 25) // Low-alpha ACCENT
+    } else {
+        Color32::TRANSPARENT
+    };
+
+    if is_hovered {
+        ui.painter().rect_filled(rect, Rounding::same(4.0), bg_color);
+    }
+
+    let mut child_ui = ui.child_ui(rect, Layout::left_to_right(Align::Center), None);
+    child_ui.add_space(8.0);
+
+    // Main Label
+    child_ui.add(Label::new(RichText::new(label)
+        .font(FontId::new(11.5, FontFamily::Name("cond".into())))
+        .color(if is_hovered { ACCENT } else { TEXT2 })));
+
+    // Shortcut Hint (Right aligned)
+    if !shortcut.is_empty() {
+        child_ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.add_space(8.0);
+            ui.label(RichText::new(shortcut)
+                .font(FontId::new(9.5, FontFamily::Name("mono".into())))
+                .color(TEXT3));
+        });
+    }
+
+    response.clicked()
 }
 
 fn open_file(path: &str) {
