@@ -1,9 +1,9 @@
 use clap::{Parser, Subcommand};
 use indexer::{acquire_privileges, get_ntfs_volumes, MftScanner};
-use storage::{save_index, LoadedIndex, FileRecord};
+use storage::{save_index, MappedIndex, IndexStore};
 use search::Searcher;
-use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(name = "ferrex")]
@@ -47,40 +47,54 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let raw_entries = scanner.scan()?;
                 println!("Found {} entries", raw_entries.len());
 
-                let mut string_pool = Vec::new();
-                let mut records = Vec::with_capacity(raw_entries.len());
-                
+                let mut store = IndexStore::new();
                 for entry in raw_entries {
-                    let name_offset = string_pool.len() as u32;
-                    string_pool.extend_from_slice(entry.name.as_bytes());
-                    string_pool.push(0); 
+                    let name_offset = store.string_pool.len() as u32;
+                    store.string_pool.extend_from_slice(entry.name.as_bytes());
+                    store.string_pool.push(0);
 
-                    records.push(FileRecord {
-                        frn: entry.frn,
-                        parent_frn: entry.parent_frn,
-                        size: entry.file_size,
-                        timestamp: entry.modified,
-                        name_offset,
-                        flags: entry.flags,
-                    });
+                    store.frns.push(entry.frn);
+                    store.parent_frns.push(entry.parent_frn);
+                    store.sizes.push(entry.file_size);
+                    store.timestamps.push(entry.modified);
+                    store.name_offsets.push(name_offset);
+                    store.flags.push(entry.flags);
                 }
 
                 let idx_path = format!("{}_drive.idx", vol.chars().next().unwrap().to_lowercase());
-                save_index(&idx_path, &records, &string_pool, 0, 0)?;
+                save_index(&idx_path, &store)?;
                 println!("Successfully saved index to {}", idx_path);
             }
         }
         Commands::Search { query } => {
-            // Priority 1: Do NOT rescan. Load existing .idx files.
             let drives = vec!['c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z'];
             let mut loaded_stores = Vec::new();
 
             for d in drives {
                 let idx_path = format!("{}_drive.idx", d);
                 if Path::new(&idx_path).exists() {
-                    if let Ok(loaded) = LoadedIndex::load(&idx_path) {
-                        println!("Loaded index: {} ({} records)", idx_path, loaded.record_count);
-                        loaded_stores.push((d.to_uppercase().to_string(), loaded));
+                    if let Ok(mapped) = MappedIndex::load(&idx_path) {
+                        println!("Loaded index: {} ({} records)", idx_path, mapped.record_count);
+                        let mut store = IndexStore::new();
+                        let record_raw_ptr = unsafe {
+                            mapped.mmap.as_ptr().add(storage::HEADER_SIZE) as *const storage::FileRecord
+                        };
+                        let records = unsafe {
+                            std::slice::from_raw_parts(record_raw_ptr, mapped.record_count)
+                        };
+                        let pool = &mapped.mmap[mapped.string_pool_offset..];
+
+                        for r in records {
+                            store.frns.push(r.frn);
+                            store.parent_frns.push(r.parent_frn);
+                            store.sizes.push(r.size);
+                            store.timestamps.push(r.timestamp);
+                            store.flags.push(r.flags);
+                            store.name_offsets.push(r.name_offset);
+                        }
+                        store.string_pool = pool.to_vec();
+                        store.rebuild_lookups();
+                        loaded_stores.push((d.to_uppercase().to_string(), Arc::new(store)));
                     }
                 }
             }
@@ -91,21 +105,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             for (drive_letter, store) in loaded_stores {
-                let records = store.get_records();
-                let pool = store.get_string_pool();
-                
-                // Rebuild FRN map for path resolution (O(N))
-                let mut frn_to_idx = HashMap::with_capacity(records.len());
-                for (i, rec) in records.iter().enumerate() {
-                    frn_to_idx.insert(rec.frn, i);
-                }
+                let searcher = Searcher::new(
+                    &store.frns, &store.parent_frns, &store.sizes, &store.timestamps,
+                    &store.flags, &store.name_offsets, &store.string_pool
+                );
+                let matches = searcher.search_with_ext(query, None);
 
-                let searcher = Searcher::new(records, pool);
-                let matches = searcher.search(query);
-
-                for &idx in &matches {
-                    let full_path = resolve_full_path(&drive_letter, idx, records, pool, &frn_to_idx);
-                    println!("{}", full_path);
+                for idx in matches {
+                    let path = store.get_path(idx);
+                    let name_offset = store.name_offsets[idx] as usize;
+                    let name = pool_get_name(&store.string_pool, name_offset);
+                    println!("{}:\\{}\\{}", drive_letter, path, name);
                 }
             }
         }
@@ -117,36 +127,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn resolve_full_path(
-    drive: &str,
-    idx: usize,
-    records: &[FileRecord],
-    pool: &[u8],
-    frn_to_idx: &HashMap<u64, usize>
-) -> String {
-    let mut path_parts = Vec::new();
-    let mut current_idx = Some(idx);
-
-    while let Some(idx) = current_idx {
-        let rec = &records[idx];
-        let offset = rec.name_offset as usize;
-        let name_slice = &pool[offset..];
-        let end = name_slice.iter().position(|&b| b == 0).unwrap_or(name_slice.len());
-        let name = String::from_utf8_lossy(&name_slice[..end]);
-        
-        path_parts.push(name.to_string());
-
-        let p_frn = rec.parent_frn;
-        let c_frn = rec.frn;
-
-        // Root FRN is usually 5 on NTFS. stop if we reach root or cannot find parent.
-        if c_frn == 5 || p_frn == 0 {
-            break;
-        }
-
-        current_idx = frn_to_idx.get(&p_frn).copied();
-    }
-
-    path_parts.reverse();
-    format!("{}:\\{}", drive, path_parts.join("\\"))
+fn pool_get_name(pool: &[u8], offset: usize) -> String {
+    if offset >= pool.len() { return String::new(); }
+    let slice = &pool[offset..];
+    let end = slice.iter().position(|&b| b == 0).unwrap_or(slice.len());
+    String::from_utf8_lossy(&slice[..end]).to_string()
 }

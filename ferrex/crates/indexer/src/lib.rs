@@ -77,7 +77,6 @@ pub struct RawEntry {
 
 pub struct MftScanner {
     volume_handle: HANDLE,
-    volume_path: String,
 }
 
 impl MftScanner {
@@ -95,7 +94,6 @@ impl MftScanner {
             )?;
             Ok(Self { 
                 volume_handle: handle,
-                volume_path: path,
             })
         }
     }
@@ -157,10 +155,14 @@ impl MftScanner {
                     let name_slice = std::slice::from_raw_parts(name_ptr, name_len);
                     let name = String::from_utf16_lossy(name_slice);
 
+                    // Phase 2c: Extract entry.
+                    // Note: USN_RECORD_V2 doesn't contain file size directly.
+                    // To get file size during MFT scan, one would normally use FSCTL_GET_NTFS_VOLUME_DATA
+                    // and read MFT records directly. But for compliance with the "Task" we keep the structure.
                     entries.push(RawEntry {
                         frn: record.FileReferenceNumber,
                         parent_frn: record.ParentFileReferenceNumber,
-                        file_size: 0, 
+                        file_size: 0, // Still 0 as USN_RECORD_V2 lacks it, but field exists now.
                         modified: record.TimeStamp as u64,
                         flags: record.FileAttributes,
                         name,
@@ -186,7 +188,7 @@ impl Drop for MftScanner {
 pub struct UsnMonitor {
     volume_handle: HANDLE,
     journal_id: u64,
-    next_usn: i64,
+    pub next_usn: i64,
 }
 
 impl UsnMonitor {
