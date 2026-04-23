@@ -79,7 +79,7 @@ impl IconCache {
                 PCWSTR(path_hstring.as_ptr())
             };
 
-            SHGetFileInfoW(
+            let _ = SHGetFileInfoW(
                 path_ptr,
                 attr,
                 Some(&mut shfi),
@@ -363,9 +363,14 @@ impl eframe::App for FerrexApp {
                         let angle = std::f32::consts::PI / 180.0 * (60.0 * i as f32 - 30.0);
                         egui::pos2(center.x + r * angle.cos(), center.y + r * angle.sin())
                     }).collect();
-                    painter.add(egui::Shape::closed_line(points, egui::Stroke::new(1.5, ACCENT)));
+                    // Draw Cube Hexagon
+                    painter.add(egui::Shape::closed_line(points.clone(), egui::Stroke::new(1.5, ACCENT)));
+                    for i in 0..6 {
+                        painter.line_segment([center, points[i]], egui::Stroke::new(1.0, ACCENT.gamma_multiply(0.6)));
+                    }
+
                     ui.add_space(8.0);
-                    ui.label(egui::RichText::new("FERREX").color(ACCENT).strong().extra_letter_spacing(2.5));
+                    ui.label(egui::RichText::new("FERREX").color(ACCENT).strong().extra_letter_spacing(2.5).size(18.0));
                     ui.add_space(14.0);
                     ui.label(egui::RichText::new("NTFS INDEXER").size(10.0).color(TEXT3));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -386,10 +391,31 @@ impl eframe::App for FerrexApp {
                     for (drive, store) in &self.stores {
                         let is_active = self.active_drives.contains(drive);
                         let (bg, stroke, text_color) = if is_active { (Color32::from_rgba_unmultiplied(255, 140, 0, 30), ACCENT, ACCENT) } else { (BG3, BORDER2, TEXT2) };
-                        if ui.add(egui::Button::new(egui::RichText::new(format!("{}: {}", drive, format_count(store.frns.len()))).color(text_color).size(12.0)).fill(bg).stroke(egui::Stroke::new(1.0, stroke)).rounding(0.0)).clicked() {
+
+                        let label = format!("{}  {}", drive, format_count(store.frns.len()));
+                        let btn = egui::Button::new(egui::RichText::new(label).color(text_color).size(12.0))
+                            .fill(bg).stroke(egui::Stroke::new(1.0, stroke)).rounding(0.0);
+
+                        if ui.add(btn).clicked() {
                             toggled_drive = Some((drive.clone(), is_active));
                         }
+                        ui.add_space(4.0);
                     }
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let all_active = self.active_drives.len() == self.stores.len();
+                        let label = if all_active { "全清" } else { "全选" };
+                        if ui.add(egui::Button::new(egui::RichText::new(label).size(10.0).color(TEXT3)).frame(false)).clicked() {
+                            if all_active && self.stores.len() > 1 {
+                                let first = self.stores[0].0.clone();
+                                self.active_drives = HashSet::from([first]);
+                            } else {
+                                self.active_drives = self.stores.iter().map(|(d,_)| d.clone()).collect();
+                            }
+                            self.run_search();
+                        }
+                    });
+
                     if let Some((drive, was_active)) = toggled_drive {
                         if was_active && self.active_drives.len() > 1 { self.active_drives.remove(&drive); }
                         else if !was_active { self.active_drives.insert(drive); }
@@ -409,13 +435,26 @@ impl eframe::App for FerrexApp {
                     let c = icon_rect.center();
                     ui.painter().circle_stroke(egui::pos2(c.x-2.0, c.y-2.0), 5.5, egui::Stroke::new(1.5, TEXT3));
                     ui.painter().line_segment([egui::pos2(c.x+2.0, c.y+2.0), egui::pos2(c.x+6.0, c.y+6.0)], egui::Stroke::new(1.5, TEXT3));
-                    let search_res = ui.add_sized(egui::vec2(ui.available_width() - 184.0, 36.0), egui::TextEdit::singleline(&mut self.query).hint_text("文件名 / 关键词...").frame(true));
+
+                    let search_res = ui.add_sized(egui::vec2(ui.available_width() - 184.0, 36.0),
+                        egui::TextEdit::singleline(&mut self.query)
+                            .hint_text("文件名 / 关键词...")
+                            .frame(true)
+                            .margin(egui::vec2(8.0, 8.0)));
+
                     let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(24.0, 36.0), egui::Sense::hover());
                     ui.painter().rect_filled(dot_rect, 0.0, BG3);
                     ui.painter().text(dot_rect.center(), egui::Align2::CENTER_CENTER, ".", egui::FontId::monospace(16.0), ACCENT);
-                    let ext_res = ui.add_sized(egui::vec2(80.0, 36.0), egui::TextEdit::singleline(&mut self.ext_filter).hint_text("扩展名").frame(true));
+
+                    let ext_res = ui.add_sized(egui::vec2(80.0, 36.0),
+                        egui::TextEdit::singleline(&mut self.ext_filter)
+                            .hint_text("扩展名")
+                            .frame(true)
+                            .margin(egui::vec2(4.0, 8.0)));
+
                     ui.add_space(10.0);
-                    if ui.add(egui::Button::new(egui::RichText::new("搜索").color(Color32::BLACK).strong()).fill(ACCENT).min_size(egui::vec2(70.0, 36.0))).clicked() || search_res.changed() || ext_res.changed() {
+                    if ui.add(egui::Button::new(egui::RichText::new("搜索").color(Color32::BLACK).strong())
+                        .fill(ACCENT).min_size(egui::vec2(70.0, 36.0)).rounding(0.0)).clicked() || search_res.changed() || ext_res.changed() {
                         self.run_search();
                     }
                 });
@@ -427,7 +466,7 @@ impl eframe::App for FerrexApp {
                 ui.horizontal_centered(|ui| {
                     ui.add_space(18.0);
                     ui.label(egui::RichText::new("名称").size(10.0).color(TEXT3).extra_letter_spacing(1.5));
-                    ui.add_space(200.0);
+                    ui.add_space(240.0);
                     ui.label(egui::RichText::new("路径").size(10.0).color(TEXT3).extra_letter_spacing(1.5));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(egui::RichText::new("大小").size(10.0).color(TEXT3).extra_letter_spacing(1.5));
@@ -449,7 +488,7 @@ impl eframe::App for FerrexApp {
             });
 
         // 6. RESULTS LIST
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().frame(egui::Frame::none().fill(BG)).show(ctx, |ui| {
             if self.results.is_empty() && !self.query.is_empty() {
                 ui.centered_and_justified(|ui| {
                     ui.vertical_centered(|ui| {
@@ -459,15 +498,18 @@ impl eframe::App for FerrexApp {
                 });
             } else {
                 egui::ScrollArea::vertical().show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
                     for (i, res) in self.results.iter().take(200).enumerate() {
                         let bg = if i % 2 == 0 { BG } else { BG2 };
-                        egui::Frame::none().fill(bg).show(ui, |ui| {
+                        let frame = egui::Frame::none().fill(bg).inner_margin(egui::Margin::symmetric(16.0, 4.0));
+
+                        let _response = frame.show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 let icon_handle = self.icons.get(ctx, &res.name, res.is_dir);
                                 ui.add(egui::Image::new(icon_handle).fit_to_exact_size(egui::vec2(14.0, 14.0)));
 
                                 ui.add(egui::Label::new(egui::RichText::new(format!("{}:", res.drive)).size(9.0).color(TEXT3)).truncate());
-                                ui.add_sized(egui::vec2(200.0, 18.0), egui::Label::new(egui::RichText::new(&res.name).color(TEXT)).truncate());
+                                ui.add_sized(egui::vec2(240.0, 18.0), egui::Label::new(egui::RichText::new(&res.name).color(TEXT).size(12.5)).truncate());
                                 ui.label(egui::RichText::new(&res.full_path).color(TEXT3).size(11.0));
 
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -475,6 +517,7 @@ impl eframe::App for FerrexApp {
                                 });
                             });
                         });
+                        ui.separator();
                     }
                 });
             }
@@ -522,7 +565,7 @@ fn pool_get_name(pool: &[u8], offset: usize) -> String {
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([750.0, 550.0]).with_title("Ferrex"),
+        viewport: egui::ViewportBuilder::default().with_inner_size([800.0, 600.0]).with_title("Ferrex"),
         ..Default::default()
     };
     eframe::run_native("Ferrex", options, Box::new(|cc| Ok(Box::new(FerrexApp::new(cc)))))
