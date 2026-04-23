@@ -2,7 +2,7 @@
 
 use eframe::egui;
 use egui::Color32;
-use indexer::{acquire_privileges, get_ntfs_volumes};
+use indexer::{acquire_privileges, get_ntfs_volumes, MftScanner};
 use storage::{IndexStore, MappedIndex};
 use search::Searcher;
 use std::sync::Arc;
@@ -10,9 +10,8 @@ use std::collections::{HashMap, HashSet};
 use std::process::Command;
 use std::time::Instant;
 
-// --- Colors from AGENTS-2.md ---
-const BG: Color32 = Color32::from_rgb(7, 9, 11);
 const PANEL: Color32 = Color32::from_rgb(13, 16, 20);
+const BG: Color32 = Color32::from_rgb(7, 9, 11);
 const BG2: Color32 = Color32::from_rgb(17, 21, 25);
 const BG3: Color32 = Color32::from_rgb(22, 27, 32);
 const BORDER2: Color32 = Color32::from_rgb(37, 46, 55);
@@ -23,7 +22,6 @@ const TEXT3: Color32 = Color32::from_rgb(61, 80, 96);
 const SUCCESS: Color32 = Color32::from_rgb(46, 204, 113);
 const DANGER: Color32 = Color32::from_rgb(231, 76, 60);
 
-// --- Icon Cache Pool ---
 struct IconCache {
     map: HashMap<&'static str, egui::ImageSource<'static>>,
 }
@@ -91,23 +89,24 @@ struct FerrexApp {
 
 impl FerrexApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        // --- IRON RULE: Only Microsoft YaHei font ---
         let mut fonts = egui::FontDefinitions::default();
+        // --- IRON RULE: Only Microsoft YaHei ---
+        fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().clear();
+        fonts.families.get_mut(&egui::FontFamily::Monospace).unwrap().clear();
+
         let yahei_paths = [
             "C:\\Windows\\Fonts\\msyh.ttc",
             "C:\\Windows\\Fonts\\msyh.ttf",
             "C:\\Windows\\Fonts\\msyhl.ttc",
         ];
-
         for path in yahei_paths {
             if let Ok(font_data) = std::fs::read(path) {
                 fonts.font_data.insert("yahei".to_owned(), egui::FontData::from_owned(font_data));
-                fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().insert(0, "yahei".to_owned());
-                fonts.families.get_mut(&egui::FontFamily::Monospace).unwrap().insert(0, "yahei".to_owned());
+                fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().push("yahei".to_owned());
+                fonts.families.get_mut(&egui::FontFamily::Monospace).unwrap().push("yahei".to_owned());
                 break;
             }
         }
-
         cc.egui_ctx.set_fonts(fonts);
 
         let mut app = Self {
@@ -116,7 +115,7 @@ impl FerrexApp {
             results: Vec::new(),
             stores: Vec::new(),
             active_drives: HashSet::new(),
-            status_text: "初始化中...".to_string(),
+            status_text: "初始化系统...".to_string(),
             total_records: 0,
             last_search_ms: 0.0,
             icons: IconCache::new(),
@@ -125,7 +124,7 @@ impl FerrexApp {
 
         app.hardware_ok = app.verify_hardware_wmi();
         if app.hardware_ok {
-            app.load_all_indices();
+            app.load_or_build_all_indices();
         }
 
         app
@@ -151,25 +150,23 @@ impl FerrexApp {
         false 
     }
 
-    fn load_all_indices(&mut self) {
+    fn load_or_build_all_indices(&mut self) {
         if let Err(_) = acquire_privileges() {
-            self.status_text = "权限不足".to_string();
+            self.status_text = "权限不足，请以管理员运行".to_string();
             return;
         }
         let volumes = get_ntfs_volumes();
         for vol in volumes {
             let drive_letter = vol.replace(":", "");
             let idx_path = format!("{}_drive.idx", drive_letter);
+
+            let mut store = IndexStore::new();
             if let Ok(mapped) = MappedIndex::load(&idx_path) {
-                let mut store = IndexStore::new();
                 let record_raw_ptr = unsafe {
                     mapped.mmap.as_ptr().add(storage::HEADER_SIZE) as *const storage::FileRecord
                 };
-                let records = unsafe {
-                    std::slice::from_raw_parts(record_raw_ptr, mapped.record_count)
-                };
+                let records = unsafe { std::slice::from_raw_parts(record_raw_ptr, mapped.record_count) };
                 let pool = &mapped.mmap[mapped.string_pool_offset..];
-
                 for r in records {
                     store.frns.push(r.frn);
                     store.parent_frns.push(r.parent_frn);
@@ -181,15 +178,36 @@ impl FerrexApp {
                 store.string_pool = pool.to_vec();
                 store.usn_watermark = mapped.usn_watermark;
                 store.volume_serial = mapped.volume_serial;
-                store.rebuild_lookups();
+            } else {
+                // 开箱即用：如果无索引，自动扫描
+                if let Ok(scanner) = MftScanner::new(&vol) {
+                    if let Ok(raw_entries) = scanner.scan() {
+                        for entry in raw_entries {
+                            let offset = store.string_pool.len() as u32;
+                            store.string_pool.extend_from_slice(entry.name.as_bytes());
+                            store.string_pool.push(0);
+                            store.frns.push(entry.frn);
+                            store.parent_frns.push(entry.parent_frn);
+                            store.sizes.push(entry.file_size);
+                            store.timestamps.push(entry.modified);
+                            store.name_offsets.push(offset);
+                            store.flags.push(entry.flags);
+                        }
+                        // 尝试保存索引以备下次使用
+                        let _ = storage::save_index(&idx_path, &store);
+                    }
+                }
+            }
 
-                let arc_store = Arc::new(store);
-                self.stores.push((drive_letter.clone(), arc_store));
+            if !store.frns.is_empty() {
+                store.rebuild_lookups();
+                let count = store.frns.len();
+                self.stores.push((drive_letter.clone(), Arc::new(store)));
                 self.active_drives.insert(drive_letter);
-                self.total_records += mapped.record_count;
+                self.total_records += count;
             }
         }
-        self.status_text = format!("就绪 - {} 卷", self.stores.len());
+        self.status_text = if self.stores.is_empty() { "未发现可用驱动器".to_string() } else { format!("就绪 - {} 卷", self.stores.len()) };
     }
 
     fn run_search(&mut self) {
@@ -236,11 +254,9 @@ impl eframe::App for FerrexApp {
                     ui.vertical_centered(|ui| {
                         let (rect, _) = ui.allocate_exact_size(egui::vec2(48.0, 48.0), egui::Sense::hover());
                         let painter = ui.painter();
-                        // Draw a red lock icon
                         let c = rect.center();
                         painter.rect_stroke(egui::Rect::from_center_size(egui::pos2(c.x, c.y + 4.0), egui::vec2(24.0, 18.0)), 2.0, egui::Stroke::new(2.0, DANGER));
                         painter.circle_stroke(egui::pos2(c.x, c.y - 4.0), 8.0, egui::Stroke::new(2.0, DANGER));
-
                         ui.add_space(16.0);
                         ui.heading(egui::RichText::new("未授权的硬件设备").color(DANGER));
                         ui.label(egui::RichText::new("请联系开发者").color(TEXT3));
@@ -251,9 +267,7 @@ impl eframe::App for FerrexApp {
         }
 
         // 1. TITLEBAR
-        egui::TopBottomPanel::top("titlebar")
-            .exact_height(44.0)
-            .frame(egui::Frame::none().fill(PANEL).inner_margin(egui::Margin::symmetric(16.0, 0.0)))
+        egui::TopBottomPanel::top("titlebar").exact_height(44.0).frame(egui::Frame::none().fill(PANEL).inner_margin(egui::Margin::symmetric(16.0, 0.0)))
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
                     let (rect, _) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::hover());
@@ -271,17 +285,14 @@ impl eframe::App for FerrexApp {
                     ui.label(egui::RichText::new("NTFS INDEXER").size(10.0).color(TEXT3));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
-                        let dot_color = if self.total_records > 0 { SUCCESS } else { TEXT3 };
-                        ui.painter().circle_filled(dot_rect.center(), 4.0, dot_color);
+                        ui.painter().circle_filled(dot_rect.center(), 4.0, if self.total_records > 0 { SUCCESS } else { TEXT3 });
                         ui.label(egui::RichText::new(format!("索引就绪 — {} 条记录", format_number(self.total_records))).size(10.0).color(TEXT3));
                     });
                 });
             });
 
         // 2. DRIVE SELECTOR
-        egui::TopBottomPanel::top("drives")
-            .exact_height(40.0)
-            .frame(egui::Frame::none().fill(BG2).inner_margin(egui::Margin::symmetric(16.0, 0.0)))
+        egui::TopBottomPanel::top("drives").exact_height(40.0).frame(egui::Frame::none().fill(BG2).inner_margin(egui::Margin::symmetric(16.0, 0.0)))
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
                     ui.label(egui::RichText::new("DRIVES").size(10.0).color(TEXT3));
@@ -289,67 +300,44 @@ impl eframe::App for FerrexApp {
                     let mut toggled_drive = None;
                     for (drive, store) in &self.stores {
                         let is_active = self.active_drives.contains(drive);
-                        let label = format!("{}: {}", drive, format_count(store.frns.len()));
-                        let (bg, stroke, text_color) = if is_active {
-                            (Color32::from_rgba_unmultiplied(255, 140, 0, 30), ACCENT, ACCENT)
-                        } else {
-                            (BG3, BORDER2, TEXT2)
-                        };
-                        if ui.add(egui::Button::new(egui::RichText::new(label).color(text_color).size(12.0))
-                            .fill(bg).stroke(egui::Stroke::new(1.0, stroke)).rounding(0.0)).clicked() {
+                        let (bg, stroke, text_color) = if is_active { (Color32::from_rgba_unmultiplied(255, 140, 0, 30), ACCENT, ACCENT) } else { (BG3, BORDER2, TEXT2) };
+                        if ui.add(egui::Button::new(egui::RichText::new(format!("{}: {}", drive, format_count(store.frns.len()))).color(text_color).size(12.0)).fill(bg).stroke(egui::Stroke::new(1.0, stroke)).rounding(0.0)).clicked() {
                             toggled_drive = Some((drive.clone(), is_active));
                         }
                     }
-
                     if let Some((drive, was_active)) = toggled_drive {
-                        if was_active && self.active_drives.len() > 1 {
-                            self.active_drives.remove(&drive);
-                        } else if !was_active {
-                            self.active_drives.insert(drive);
-                        }
+                        if was_active && self.active_drives.len() > 1 { self.active_drives.remove(&drive); }
+                        else if !was_active { self.active_drives.insert(drive); }
                         self.run_search();
                     }
                 });
             });
 
         // 3. SEARCH BAR
-        egui::TopBottomPanel::top("searchbar")
-            .exact_height(46.0)
-            .frame(egui::Frame::none().fill(PANEL).inner_margin(egui::Margin::symmetric(16.0, 5.0)))
+        egui::TopBottomPanel::top("searchbar").exact_height(46.0).frame(egui::Frame::none().fill(PANEL).inner_margin(egui::Margin::symmetric(16.0, 5.0)))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     let (icon_rect, _) = ui.allocate_exact_size(egui::vec2(36.0, 36.0), egui::Sense::hover());
                     ui.painter().rect_filled(icon_rect, 0.0, BG2);
                     ui.painter().rect_stroke(icon_rect, 0.0, egui::Stroke::new(1.0, BORDER2));
-
-                    // Simple magnifier
                     let c = icon_rect.center();
                     ui.painter().circle_stroke(egui::pos2(c.x-2.0, c.y-2.0), 5.5, egui::Stroke::new(1.5, TEXT3));
                     ui.painter().line_segment([egui::pos2(c.x+2.0, c.y+2.0), egui::pos2(c.x+6.0, c.y+6.0)], egui::Stroke::new(1.5, TEXT3));
-
-                    let search_res = ui.add_sized(egui::vec2(ui.available_width() - 184.0, 36.0),
-                        egui::TextEdit::singleline(&mut self.query).hint_text("文件名 / 关键词...").frame(true));
-
+                    let search_res = ui.add_sized(egui::vec2(ui.available_width() - 184.0, 36.0), egui::TextEdit::singleline(&mut self.query).hint_text("文件名 / 关键词...").frame(true));
                     let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(24.0, 36.0), egui::Sense::hover());
                     ui.painter().rect_filled(dot_rect, 0.0, BG3);
                     ui.painter().text(dot_rect.center(), egui::Align2::CENTER_CENTER, ".", egui::FontId::monospace(16.0), ACCENT);
-
-                    let ext_res = ui.add_sized(egui::vec2(80.0, 36.0),
-                        egui::TextEdit::singleline(&mut self.ext_filter).hint_text("扩展名").frame(true));
-
+                    let ext_res = ui.add_sized(egui::vec2(80.0, 36.0), egui::TextEdit::singleline(&mut self.ext_filter).hint_text("扩展名").frame(true));
                     ui.add_space(10.0);
-                    if ui.add(egui::Button::new(egui::RichText::new("搜索").color(Color32::BLACK).strong())
-                        .fill(ACCENT).min_size(egui::vec2(70.0, 36.0))).clicked() || search_res.changed() || ext_res.changed() {
+                    if ui.add(egui::Button::new(egui::RichText::new("搜索").color(Color32::BLACK).strong()).fill(ACCENT).min_size(egui::vec2(70.0, 36.0))).clicked() || search_res.changed() || ext_res.changed() {
                         self.run_search();
                     }
                 });
             });
 
         // 4. COLUMN HEADER
-        egui::TopBottomPanel::top("col_header")
-            .exact_height(30.0)
-            .frame(egui::Frame::none().fill(BG2).inner_margin(egui::Margin::symmetric(16.0, 0.0)))
+        egui::TopBottomPanel::top("col_header").exact_height(30.0).frame(egui::Frame::none().fill(BG2).inner_margin(egui::Margin::symmetric(16.0, 0.0)))
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
                     ui.add_space(18.0);
@@ -363,9 +351,7 @@ impl eframe::App for FerrexApp {
             });
 
         // 5. STATUS BAR
-        egui::TopBottomPanel::bottom("statusbar")
-            .exact_height(26.0)
-            .frame(egui::Frame::none().fill(PANEL).inner_margin(egui::Margin::symmetric(16.0, 0.0)))
+        egui::TopBottomPanel::bottom("statusbar").exact_height(26.0).frame(egui::Frame::none().fill(PANEL).inner_margin(egui::Margin::symmetric(16.0, 0.0)))
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
                     stat_item(ui, "结果", &format_number(self.results.len()));
@@ -392,16 +378,10 @@ impl eframe::App for FerrexApp {
                         let bg = if i % 2 == 0 { BG } else { BG2 };
                         egui::Frame::none().fill(bg).show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                let icon = self.icons.get_for_entry(&res.name, res.is_dir);
-                                ui.add(egui::Image::new(icon.clone()).fit_to_exact_size(egui::vec2(14.0, 14.0)));
-
-                                // Drive tag
-                                ui.add(egui::Label::new(egui::RichText::new(format!("{}:", res.drive)).size(9.0).color(TEXT3))
-                                    .truncate());
-
+                                ui.add(egui::Image::new(self.icons.get_for_entry(&res.name, res.is_dir).clone()).fit_to_exact_size(egui::vec2(14.0, 14.0)));
+                                ui.add(egui::Label::new(egui::RichText::new(format!("{}:", res.drive)).size(9.0).color(TEXT3)).truncate());
                                 ui.add_sized(egui::vec2(200.0, 18.0), egui::Label::new(egui::RichText::new(&res.name).color(TEXT)).truncate());
                                 ui.label(egui::RichText::new(&res.full_path).color(TEXT3).size(11.0));
-
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                     ui.label(egui::RichText::new(format_size(res.size)).color(TEXT2).size(11.0));
                                 });
