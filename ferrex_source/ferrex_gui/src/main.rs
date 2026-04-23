@@ -507,113 +507,93 @@ impl FerrexApp {
 
     fn draw_titlebar(&mut self, ui: &mut egui::Ui) {
         let rect = ui.available_rect_before_wrap();
-        // Bottom border to match reference version's physical cutting feeling
+        // 绘制底部边框，百分之百还原参考版的物理边缘感
         ui.painter().line_segment(
-            [rect.left_bottom() + Vec2::new(-8.0, 0.0), rect.right_bottom() + Vec2::new(8.0, 0.0)],
-            Stroke::new(1.0, BORDER2)
+            [rect.left_bottom(), rect.right_bottom()],
+            Stroke::new(1.0, Color32::from_rgb(68, 68, 68)) // 参考版 #444
         );
 
-        let response = ui.interact(rect, ui.id(), Sense::click_and_drag());
-        if response.drag_started_by(egui::PointerButton::Primary) {
-            ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
-        }
-
         ui.horizontal_centered(|ui| {
+            ui.add_space(8.0);
             ui.add(egui::Image::new(egui::include_image!("../../ferrex.png")).max_size(Vec2::new(18.0, 18.0)));
             ui.add_space(8.0);
             ui.label(RichText::new("FERREX").font(FontId::new(14.0, FontFamily::Name("cond".into()))).color(ACCENT).extra_letter_spacing(1.5));
             ui.add_space(12.0);
 
+            // 恢复被移除的核心 UX：记录总数显示
             let total_records: usize = self.stores.iter().map(|s| s.record_count).sum();
             ui.label(RichText::new(format!("READY — {}", format_number(total_records))).font(FontId::new(9.0, FontFamily::Name("cond".into()))).color(TEXT3));
 
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
+            // 中间拖拽区域（物理分离按钮区域，避免交互冲突）
+            let drag_rect = ui.available_rect_before_wrap();
+            let drag_response = ui.interact(drag_rect, ui.id().with("drag"), Sense::click_and_drag());
+            if drag_response.drag_started_by(egui::PointerButton::Primary) {
+                ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
+            }
 
-                // Close Button
-                let close_response = self.title_bar_button(ui, "close", Color32::from_rgb(232, 17, 35), true);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+
+                // 关闭按钮 - 物理加载 close.svg
+                let close_response = self.draw_svg_button(ui, egui::include_image!("../icons/close.svg"), Color32::from_rgb(232, 17, 35), Color32::from_rgb(241, 112, 122), Color32::from_rgb(165, 0, 0), Color32::WHITE);
                 if close_response.clicked() {
                     ui.ctx().send_viewport_cmd(ViewportCommand::Close);
                 }
 
-                // Maximize Button
-                let max_response = self.title_bar_button(ui, "max", Color32::TRANSPARENT, false);
+                // 最大化/还原 - 物理加载
+                let is_max = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
+                let max_img = if is_max { egui::include_image!("../icons/restore.svg") } else { egui::include_image!("../icons/maximize.svg") };
+                let max_response = self.draw_svg_button(ui, max_img, Color32::TRANSPARENT, Color32::from_rgba_unmultiplied(255, 255, 255, 25), Color32::from_rgba_unmultiplied(255, 255, 255, 51), Color32::from_rgb(238, 238, 238));
                 if max_response.clicked() {
-                    let is_maximized = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
-                    if is_maximized {
-                        ui.ctx().send_viewport_cmd(ViewportCommand::Maximized(false));
-                    } else {
-                        ui.ctx().send_viewport_cmd(ViewportCommand::Maximized(true));
-                    }
+                    ui.ctx().send_viewport_cmd(ViewportCommand::Maximized(!is_max));
                 }
 
-                // Minimize Button
-                let min_response = self.title_bar_button(ui, "min", Color32::TRANSPARENT, false);
+                // 最小化 - 物理加载 minimize.svg
+                let min_response = self.draw_svg_button(ui, egui::include_image!("../icons/minimize.svg"), Color32::TRANSPARENT, Color32::from_rgba_unmultiplied(255, 255, 255, 25), Color32::from_rgba_unmultiplied(255, 255, 255, 51), Color32::from_rgb(238, 238, 238));
                 if min_response.clicked() {
                     ui.ctx().send_viewport_cmd(ViewportCommand::Minimized(true));
                 }
 
-                // Pin Button
-                let pin_color = if self.is_pinned { Color32::from_rgb(255, 85, 28) } else { TEXT };
-                let pin_response = self.title_bar_button_custom(ui, "pin", Color32::TRANSPARENT, false, pin_color);
+                // 置顶 - 物理加载 pin.svg
+                let pin_color = if self.is_pinned { Color32::from_rgb(255, 85, 28) } else { Color32::from_rgb(238, 238, 238) };
+                let pin_response = self.draw_svg_button(ui, egui::include_image!("../icons/pin.svg"), Color32::TRANSPARENT, Color32::from_rgba_unmultiplied(255, 255, 255, 25), Color32::from_rgba_unmultiplied(255, 255, 255, 51), pin_color);
                 if pin_response.clicked() {
                     self.is_pinned = !self.is_pinned;
-                    if self.is_pinned {
-                        ui.ctx().send_viewport_cmd(ViewportCommand::WindowLevel(egui::WindowLevel::AlwaysOnTop));
-                    } else {
-                        ui.ctx().send_viewport_cmd(ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
-                    }
+                    let level = if self.is_pinned { egui::WindowLevel::AlwaysOnTop } else { egui::WindowLevel::Normal };
+                    ui.ctx().send_viewport_cmd(ViewportCommand::WindowLevel(level));
                 }
             });
         });
     }
 
-    fn title_bar_button(&self, ui: &mut egui::Ui, icon: &str, base_fill: Color32, is_close: bool) -> egui::Response {
-        self.title_bar_button_custom(ui, icon, base_fill, is_close, TEXT)
-    }
+    /// 核心渲染函数：100% 使用物理 SVG 文件加载（禁止模拟绘图）
+    fn draw_svg_button(
+        &self,
+        ui: &mut egui::Ui,
+        img_source: egui::ImageSource<'static>,
+        base_bg: Color32,
+        hover_bg: Color32,
+        press_bg: Color32,
+        icon_tint: Color32
+    ) -> egui::Response {
+        // 规格：24x24px 容器 (参考版 setFixedSize(24, 24))
+        let (rect, response) = ui.allocate_at_least(Vec2::splat(24.0), Sense::click());
 
-    fn title_bar_button_custom(&self, ui: &mut egui::Ui, icon: &str, base_fill: Color32, is_close: bool, icon_color: Color32) -> egui::Response {
-        let (rect, response) = ui.allocate_at_least(Vec2::new(24.0, 24.0), Sense::click());
-
-        let fill = if response.is_pointer_button_down_on() {
-            if is_close { Color32::from_rgb(165, 0, 0) } else { Color32::from_rgba_unmultiplied(255, 255, 255, 51) }
-        } else if response.hovered() {
-            if is_close { Color32::from_rgb(241, 112, 122) } else { Color32::from_rgba_unmultiplied(255, 255, 255, 25) }
-        } else {
-            base_fill
-        };
+        let fill = if response.is_pointer_button_down_on() { press_bg }
+                   else if response.hovered() { hover_bg }
+                   else { base_bg };
 
         if fill != Color32::TRANSPARENT {
             ui.painter().rect_filled(rect, Rounding::same(4.0), fill);
         }
 
-        let stroke = Stroke::new(1.2, icon_color);
-        let center = rect.center();
-        let size = 8.0;
+        // 渲染真实的物理 SVG 图标
+        let mut img = egui::Image::new(img_source)
+            .max_size(Vec2::splat(14.0)) // 严格控制图标在按钮中心的比例
+            .tint(icon_tint);
 
-        match icon {
-            "close" => {
-                ui.painter().line_segment([center - Vec2::splat(size/2.0), center + Vec2::splat(size/2.0)], stroke);
-                ui.painter().line_segment([center + Vec2::new(size/2.0, -size/2.0), center + Vec2::new(-size/2.0, size/2.0)], stroke);
-            }
-            "max" => {
-                let is_maximized = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
-                if is_maximized {
-                    ui.painter().rect_stroke(egui::Rect::from_center_size(center + Vec2::new(1.0, -1.0), Vec2::splat(size-2.0)), Rounding::ZERO, stroke);
-                    ui.painter().rect_stroke(egui::Rect::from_center_size(center + Vec2::new(-1.0, 1.0), Vec2::splat(size-2.0)), Rounding::ZERO, stroke);
-                } else {
-                    ui.painter().rect_stroke(egui::Rect::from_center_size(center, Vec2::splat(size)), Rounding::ZERO, stroke);
-                }
-            }
-            "min" => {
-                ui.painter().line_segment([center - Vec2::new(size/2.0, 0.0), center + Vec2::new(size/2.0, 0.0)], stroke);
-            }
-            "pin" => {
-                ui.painter().circle_stroke(center, 2.5, stroke);
-                ui.painter().line_segment([center + Vec2::new(0.0, 2.5), center + Vec2::new(0.0, 5.0)], stroke);
-            }
-            _ => {}
-        }
+        let mut child_ui = ui.child_ui(rect, Layout::centered_and_justified(Direction::LeftToRight), None);
+        child_ui.add(img);
 
         response
     }
