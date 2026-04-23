@@ -549,7 +549,7 @@ impl eframe::App for FerrexApp {
                     stat_item(ui, "盘符", &self.active_drives.iter().cloned().collect::<Vec<_>>().join(" "));
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(RichText::new("FERREX v0.1.0").color(ACCENT).size(10.0));
+                        ui.label(RichText::new("FERREX").color(ACCENT).size(10.0));
                     });
                 });
             });
@@ -700,8 +700,8 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1000.0, 700.0])
-            .with_title("Ferrex Indexer"),
+            .with_title("ferrex"),
         ..Default::default()
     };
-    eframe::run_native("Ferrex", options, Box::new(|cc| Ok(Box::new(FerrexApp::new(cc)))))
+    eframe::run_native("ferrex", options, Box::new(|cc| Ok(Box::new(FerrexApp::new(cc)))))
 }
