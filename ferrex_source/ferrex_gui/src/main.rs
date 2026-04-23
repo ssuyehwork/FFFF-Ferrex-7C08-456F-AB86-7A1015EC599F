@@ -520,11 +520,11 @@ impl FerrexApp {
             ui.label(RichText::new("FERREX").font(FontId::new(14.0, FontFamily::Name("cond".into()))).color(ACCENT).extra_letter_spacing(1.5));
             ui.add_space(12.0);
             
-            // 恢复被移除的核心 UX：记录总数显示
+            // 记录总数显示
             let total_records: usize = self.stores.iter().map(|s| s.record_count).sum();
             ui.label(RichText::new(format!("READY — {}", format_number(total_records))).font(FontId::new(9.0, FontFamily::Name("cond".into()))).color(TEXT3));
 
-            // 中间拖拽区域（物理分离按钮区域，避免交互冲突）
+            // 中间拖拽区域
             let drag_rect = ui.available_rect_before_wrap();
             let drag_response = ui.interact(drag_rect, ui.id().with("drag"), Sense::click_and_drag());
             if drag_response.drag_started_by(egui::PointerButton::Primary) {
@@ -534,29 +534,64 @@ impl FerrexApp {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 
-                // 关闭按钮 - 物理加载 close.svg
-                let close_response = self.draw_svg_button(ui, egui::include_image!("../icons/close.svg"), Color32::from_rgb(232, 17, 35), Color32::from_rgb(241, 112, 122), Color32::from_rgb(165, 0, 0), Color32::WHITE);
+                let icon_normal = Color32::from_rgb(238, 238, 238); // #EEEEEE
+
+                // 关闭按钮
+                let close_response = self.draw_svg_button(
+                    ui,
+                    egui::include_image!("../icons/close.svg"),
+                    Color32::TRANSPARENT,
+                    Color32::from_rgb(241, 112, 122), // #F1707A
+                    Color32::from_rgb(165, 0, 0),     // #A50000
+                    icon_normal,
+                    Color32::WHITE
+                );
                 if close_response.clicked() {
                     ui.ctx().send_viewport_cmd(ViewportCommand::Close);
                 }
 
-                // 最大化/还原 - 物理加载
+                // 最大化/还原
                 let is_max = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
                 let max_img = if is_max { egui::include_image!("../icons/restore.svg") } else { egui::include_image!("../icons/maximize.svg") };
-                let max_response = self.draw_svg_button(ui, max_img, Color32::TRANSPARENT, Color32::from_rgba_unmultiplied(255, 255, 255, 25), Color32::from_rgba_unmultiplied(255, 255, 255, 51), Color32::from_rgb(238, 238, 238));
+                let max_response = self.draw_svg_button(
+                    ui,
+                    max_img,
+                    Color32::TRANSPARENT,
+                    Color32::from_rgba_unmultiplied(255, 255, 255, 25),
+                    Color32::from_rgba_unmultiplied(255, 255, 255, 51),
+                    icon_normal,
+                    icon_normal
+                );
                 if max_response.clicked() {
                     ui.ctx().send_viewport_cmd(ViewportCommand::Maximized(!is_max));
                 }
 
-                // 最小化 - 物理加载 minimize.svg
-                let min_response = self.draw_svg_button(ui, egui::include_image!("../icons/minimize.svg"), Color32::TRANSPARENT, Color32::from_rgba_unmultiplied(255, 255, 255, 25), Color32::from_rgba_unmultiplied(255, 255, 255, 51), Color32::from_rgb(238, 238, 238));
+                // 最小化
+                let min_response = self.draw_svg_button(
+                    ui,
+                    egui::include_image!("../icons/minimize.svg"),
+                    Color32::TRANSPARENT,
+                    Color32::from_rgba_unmultiplied(255, 255, 255, 25),
+                    Color32::from_rgba_unmultiplied(255, 255, 255, 51),
+                    icon_normal,
+                    icon_normal
+                );
                 if min_response.clicked() {
                     ui.ctx().send_viewport_cmd(ViewportCommand::Minimized(true));
                 }
 
-                // 置顶 - 物理加载 pin.svg
-                let pin_color = if self.is_pinned { Color32::from_rgb(255, 85, 28) } else { Color32::from_rgb(238, 238, 238) };
-                let pin_response = self.draw_svg_button(ui, egui::include_image!("../icons/pin.svg"), Color32::TRANSPARENT, Color32::from_rgba_unmultiplied(255, 255, 255, 25), Color32::from_rgba_unmultiplied(255, 255, 255, 51), pin_color);
+                // 置顶
+                let pin_icon_normal = if self.is_pinned { Color32::from_rgb(255, 85, 28) } else { icon_normal };
+                let pin_icon_hover = if self.is_pinned { Color32::from_rgb(255, 85, 28) } else { icon_normal };
+                let pin_response = self.draw_svg_button(
+                    ui,
+                    egui::include_image!("../icons/pin.svg"),
+                    Color32::TRANSPARENT,
+                    Color32::from_rgba_unmultiplied(255, 255, 255, 25),
+                    Color32::from_rgba_unmultiplied(255, 255, 255, 51),
+                    pin_icon_normal,
+                    pin_icon_hover
+                );
                 if pin_response.clicked() {
                     self.is_pinned = !self.is_pinned;
                     let level = if self.is_pinned { egui::WindowLevel::AlwaysOnTop } else { egui::WindowLevel::Normal };
@@ -574,10 +609,11 @@ impl FerrexApp {
         base_bg: Color32, 
         hover_bg: Color32, 
         press_bg: Color32, 
-        icon_tint: Color32
+        normal_tint: Color32,
+        hover_tint: Color32,
     ) -> egui::Response {
         // 规格：24x24px 容器 (参考版 setFixedSize(24, 24))
-        let (rect, response) = ui.allocate_at_least(Vec2::splat(24.0), Sense::click());
+        let (rect, response) = ui.allocate_exact_size(Vec2::splat(24.0), Sense::click());
         
         let fill = if response.is_pointer_button_down_on() { press_bg } 
                    else if response.hovered() { hover_bg } 
@@ -587,10 +623,12 @@ impl FerrexApp {
             ui.painter().rect_filled(rect, Rounding::same(4.0), fill);
         }
 
+        let tint = if response.hovered() || response.is_pointer_button_down_on() { hover_tint } else { normal_tint };
+
         // 渲染真实的物理 SVG 图标
-        let mut img = egui::Image::new(img_source)
+        let img = egui::Image::new(img_source)
             .max_size(Vec2::splat(14.0)) // 严格控制图标在按钮中心的比例
-            .tint(icon_tint);
+            .tint(tint);
             
         let mut child_ui = ui.child_ui(rect, Layout::centered_and_justified(Direction::LeftToRight), None);
         child_ui.add(img);
