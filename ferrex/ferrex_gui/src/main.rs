@@ -24,7 +24,14 @@ const TEXT3: Color32 = Color32::from_rgb(61, 80, 96);
 const SUCCESS: Color32 = Color32::from_rgb(46, 204, 113);
 const DANGER: Color32 = Color32::from_rgb(231, 76, 60);
 
-// --- Icon Cache Pool ---
+// --- Inlined SVG Icons (Phase: Robustness) ---
+// Directly embedding XML to avoid external file dependencies during build.
+const SVG_FILE: &str = r##"<svg viewBox="0 0 16 16" fill="none" stroke="#7A8F9E" stroke-width="1.2" xmlns="http://www.w3.org/2000/svg"><path d="M9 1H4a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V5z" stroke-linejoin="round"/><polyline points="9,1 9,5 13,5" stroke-linejoin="round"/></svg>"##;
+const SVG_FOLDER: &str = r##"<svg viewBox="0 0 16 16" fill="none" stroke="#C96E00" stroke-width="1.2" xmlns="http://www.w3.org/2000/svg"><path d="M1 4a1 1 0 0 1 1-1h4l2 2h6a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1z" stroke-linejoin="round"/></svg>"##;
+const SVG_EXE: &str = r##"<svg viewBox="0 0 16 16" fill="none" stroke="#7A8F9E" stroke-width="1.2" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="12" height="12" rx="1"/><path d="M5 8l2-2 2 2 2-2" stroke-linecap="round"/><line x1="5" y1="11" x2="11" y2="11" stroke-linecap="round"/></svg>"##;
+const SVG_IMAGE: &str = r##"<svg viewBox="0 0 16 16" fill="none" stroke="#7A8F9E" stroke-width="1.2" xmlns="http://www.w3.org/2000/svg"><rect x="1" y="3" width="14" height="10" rx="1"/><circle cx="5.5" cy="6.5" r="1.2" fill="#7A8F9E" stroke="none"/><polyline points="1,11 5,7.5 8,10 11,7 15,11" stroke-linejoin="round"/></svg>"##;
+const SVG_DOC: &str = r##"<svg viewBox="0 0 16 16" fill="none" stroke="#7A8F9E" stroke-width="1.2" xmlns="http://www.w3.org/2000/svg"><path d="M9 1H4a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V5z" stroke-linejoin="round"/><polyline points="9,1 9,5 13,5"/><line x1="5" y1="8" x2="11" y2="8" stroke-linecap="round"/><line x1="5" y1="10.5" x2="11" y2="10.5" stroke-linecap="round"/><line x1="5" y1="13" x2="8" y2="13" stroke-linecap="round"/></svg>"##;
+
 struct IconCache {
     map: HashMap<&'static str, egui::ImageSource<'static>>,
 }
@@ -32,27 +39,19 @@ struct IconCache {
 impl IconCache {
     fn new() -> Self {
         let mut map = HashMap::new();
-        // Load all icons from assets
-        map.insert("file", egui::ImageSource::Bytes {
-            uri: std::borrow::Cow::Borrowed("bytes://icon_file.svg"),
-            bytes: egui::load::Bytes::Static(include_bytes!("../assets/icons/file.svg")),
-        });
-        map.insert("folder", egui::ImageSource::Bytes {
-            uri: std::borrow::Cow::Borrowed("bytes://icon_folder.svg"),
-            bytes: egui::load::Bytes::Static(include_bytes!("../assets/icons/folder.svg")),
-        });
-        map.insert("exe", egui::ImageSource::Bytes {
-            uri: std::borrow::Cow::Borrowed("bytes://icon_exe.svg"),
-            bytes: egui::load::Bytes::Static(include_bytes!("../assets/icons/exe.svg")),
-        });
-        map.insert("image", egui::ImageSource::Bytes {
-            uri: std::borrow::Cow::Borrowed("bytes://icon_image.svg"),
-            bytes: egui::load::Bytes::Static(include_bytes!("../assets/icons/image.svg")),
-        });
-        map.insert("doc", egui::ImageSource::Bytes {
-            uri: std::borrow::Cow::Borrowed("bytes://icon_doc.svg"),
-            bytes: egui::load::Bytes::Static(include_bytes!("../assets/icons/doc.svg")),
-        });
+        let icons = [
+            ("file", SVG_FILE),
+            ("folder", SVG_FOLDER),
+            ("exe", SVG_EXE),
+            ("image", SVG_IMAGE),
+            ("doc", SVG_DOC),
+        ];
+        for (name, svg) in icons {
+            map.insert(name, egui::ImageSource::Bytes {
+                uri: std::borrow::Cow::Owned(format!("bytes://{}.svg", name)),
+                bytes: egui::load::Bytes::Static(svg.as_bytes()),
+            });
+        }
         Self { map }
     }
 
@@ -95,8 +94,9 @@ impl FerrexApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         install_image_loaders(&cc.egui_ctx);
 
-        // --- IRON RULE: Only Microsoft YaHei font ---
         let mut fonts = egui::FontDefinitions::default();
+        // --- IRON RULE: Only Microsoft YaHei font ---
+        // Purge all default fonts to enforce the iron rule.
         fonts.families.get_mut(&egui::FontFamily::Proportional).unwrap().clear();
         fonts.families.get_mut(&egui::FontFamily::Monospace).unwrap().clear();
 
@@ -185,7 +185,7 @@ impl FerrexApp {
                 store.usn_watermark = mapped.usn_watermark;
                 store.volume_serial = mapped.volume_serial;
             } else {
-                // 开箱即用：如果未发现索引，自动开始扫描
+                // Out-of-the-box experience: auto-scan if no index found.
                 if let Ok(scanner) = MftScanner::new(&vol) {
                     if let Ok(raw_entries) = scanner.scan() {
                         for entry in raw_entries {
@@ -212,7 +212,7 @@ impl FerrexApp {
                 self.total_records += count;
             }
         }
-        self.status_text = if self.stores.is_empty() { "未发现可用驱动器" .to_string() } else { format!("就绪 - {} 卷", self.stores.len()) };
+        self.status_text = if self.stores.is_empty() { "未发现可用驱动器".to_string() } else { format!("就绪 - {} 卷", self.stores.len()) };
     }
 
     fn run_search(&mut self) {
