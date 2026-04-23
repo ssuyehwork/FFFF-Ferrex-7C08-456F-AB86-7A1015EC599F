@@ -451,39 +451,50 @@ impl eframe::App for FerrexApp {
             ctx.send_viewport_cmd(ViewportCommand::Visible(false));
         }
 
-        egui::TopBottomPanel::top("titlebar")
-            .exact_height(44.0)
-            .frame(Frame::none().fill(PANEL).inner_margin(Margin::symmetric(16.0, 0.0)))
-            .show(ctx, |ui| { self.draw_titlebar(ui); });
+        egui::CentralPanel::default()
+            .frame(Frame::none().fill(BG).rounding(Rounding::same(8.0)).stroke(Stroke::new(1.0, BORDER2)))
+            .show(ctx, |ui| {
+                egui::TopBottomPanel::top("titlebar")
+                    .exact_height(34.0)
+                    .frame(Frame::none().fill(PANEL).inner_margin(Margin::symmetric(16.0, 0.0)))
+                    .show_inside(ui, |ui| {
+                        // Make the title bar draggable
+                        let response = ui.interact(ui.max_rect(), Id::new("title_bar_drag"), Sense::drag());
+                        if response.dragged() {
+                            ui.ctx().send_viewport_cmd(ViewportCommand::StartWindowDrag);
+                        }
+                        self.draw_titlebar(ui);
+                    });
 
-        egui::TopBottomPanel::top("drives")
-            .exact_height(40.0)
-            .frame(Frame::none().fill(BG2).inner_margin(Margin::symmetric(16.0, 0.0)))
-            .show(ctx, |ui| { self.draw_drive_selector(ui, ctx); });
+                egui::TopBottomPanel::top("drives")
+                    .exact_height(40.0)
+                    .frame(Frame::none().fill(BG2).inner_margin(Margin::symmetric(16.0, 0.0)))
+                    .show_inside(ui, |ui| { self.draw_drive_selector(ui, ctx); });
 
-        egui::TopBottomPanel::top("searchbar_area").frame(Frame::none().fill(PANEL)).show(ctx, |ui| {
-            Frame::none().inner_margin(Margin::symmetric(16.0, 5.0)).show(ui, |ui| {
-                self.draw_search_bar(ui, ctx);
-                if self.show_filters { ui.add_space(8.0); self.draw_filter_strip(ui, ctx); }
+                egui::TopBottomPanel::top("searchbar_area").frame(Frame::none().fill(PANEL)).show_inside(ui, |ui| {
+                    Frame::none().inner_margin(Margin::symmetric(16.0, 5.0)).show(ui, |ui| {
+                        self.draw_search_bar(ui, ctx);
+                        if self.show_filters { ui.add_space(8.0); self.draw_filter_strip(ui, ctx); }
+                    });
+                    if self.is_scanning {
+                        ui.add(egui::ProgressBar::new(self.scan_progress)
+                            .text(RichText::new(&self.status_text).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(ACCENT))
+                            .fill(ACCENT).desired_height(4.0).rounding(Rounding::ZERO));
+                    }
+                });
+
+                egui::TopBottomPanel::bottom("statusbar")
+                    .exact_height(26.0)
+                    .frame(Frame::none().fill(PANEL).inner_margin(Margin::symmetric(16.0, 0.0)))
+                    .show_inside(ui, |ui| { self.draw_status_bar(ui); });
+
+                egui::CentralPanel::default().frame(Frame::none().fill(BG)).show_inside(ui, |ui| {
+                    self.draw_column_header(ui);
+                    ui.add(egui::Separator::default().spacing(0.0));
+                    self.draw_results_list(ui);
+                    self.draw_hover_preview(ctx);
+                });
             });
-            if self.is_scanning { 
-                ui.add(egui::ProgressBar::new(self.scan_progress)
-                    .text(RichText::new(&self.status_text).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(ACCENT))
-                    .fill(ACCENT).desired_height(4.0).rounding(Rounding::ZERO)); 
-            }
-        });
-
-        egui::TopBottomPanel::bottom("statusbar")
-            .exact_height(26.0)
-            .frame(Frame::none().fill(PANEL).inner_margin(Margin::symmetric(16.0, 0.0)))
-            .show(ctx, |ui| { self.draw_status_bar(ui); });
-
-        egui::CentralPanel::default().frame(Frame::none().fill(BG)).show(ctx, |ui| {
-            self.draw_column_header(ui);
-            ui.add(egui::Separator::default().spacing(0.0));
-            self.draw_results_list(ui);
-            self.draw_hover_preview(ctx);
-        });
     }
 }
 
@@ -1001,7 +1012,12 @@ fn spawn_scan(vol: String, tx: std::sync::mpsc::Sender<ScanProgress>) {
 
 fn main() -> eframe::Result<()> {
     let native_options = eframe::NativeOptions { 
-        viewport: egui::ViewportBuilder::default().with_inner_size([1000.0, 700.0]).with_min_inner_size([800.0, 500.0]).with_title("Ferrex"), 
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([1000.0, 700.0])
+            .with_min_inner_size([800.0, 500.0])
+            .with_title("Ferrex")
+            .with_decorations(false) // 无边框
+            .with_transparent(true),  // 透明背景以支持圆角
         ..Default::default() 
     };
     eframe::run_native(
