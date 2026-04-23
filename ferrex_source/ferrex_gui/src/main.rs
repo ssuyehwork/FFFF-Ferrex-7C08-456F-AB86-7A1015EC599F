@@ -1,3 +1,5 @@
+#![windows_subsystem = "windows"]
+
 use eframe::egui;
 use egui::{
     Color32, RichText, FontId, FontFamily, Pos2, Vec2, Margin, Frame, Sense, Layout,
@@ -551,7 +553,7 @@ impl FerrexApp {
             Area::new(Id::new("ctx_menu")).fixed_pos(menu_pos).order(Order::Foreground).show(ui.ctx(), |ui| {
                 Frame::none().fill(PANEL).stroke(Stroke::new(1.0, BORDER2)).inner_margin(Margin::same(4.0)).show(ui, |ui| {
                     if ui.button("打开文件").clicked() { close_menu = true; }
-                    if ui.button("复制路径").clicked() { ui.ctx().copy_text(result.full_path.clone()); close_menu = true; }
+                    if ui.button("复制路径").clicked() { ui.ctx().output_mut(|o| o.copied_text = result.full_path.clone()); close_menu = true; }
                 });
             });
             if close_menu || ui.input(|i| i.pointer.any_click()) { self.context_menu_row = None; }
@@ -738,7 +740,7 @@ fn parse_size(s: &str) -> Option<u64> {
 }
 
 fn parse_date_to_filetime(s: &str) -> Option<u64> {
-    use chrono::{NaiveDate, TimeZone, Utc};
+    use chrono::{NaiveDate, Utc, TimeZone};
     let date = NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()?;
     let datetime = date.and_hms_opt(0, 0, 0)?;
     let dt_utc = Utc.from_local_datetime(&datetime).single()?;
