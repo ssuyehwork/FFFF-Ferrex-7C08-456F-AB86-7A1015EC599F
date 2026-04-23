@@ -4,7 +4,9 @@ use eframe::egui;
 use egui::{
     Color32, RichText, FontId, FontFamily, Pos2, Vec2, Margin, Frame, Sense, Layout, 
     Align, Align2, Stroke, Rounding, Label, Image, TextEdit, ScrollArea, Area, 
-    Order, Id
+    Order, Id,
+    #[allow(unused_imports)]
+    ViewportCommand,
 };
 use std::sync::Arc;
 use std::collections::{HashSet, HashMap};
@@ -146,6 +148,7 @@ struct SearchResult {
 #[derive(PartialEq, Clone, Copy)]
 enum SortColumn { Name, Path, Size, Date }
 
+#[allow(dead_code)]
 enum ScanProgress {
     Progress { done: usize, total: usize },
     Done { _drive: String, _idx_path: String },
@@ -921,13 +924,17 @@ fn set_startup(enabled: bool) {
 
 fn setup_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
-    let msyh_loaded = false;
 
     #[cfg(windows)]
-    if let Ok(font_bytes) = std::fs::read("C:\\Windows\\Fonts\\msyh.ttc") {
+    let msyh_loaded = if let Ok(font_bytes) = std::fs::read("C:\\Windows\\Fonts\\msyh.ttc") {
         fonts.font_data.insert("msyh".to_owned(), egui::FontData::from_owned(font_bytes));
-        msyh_loaded = true;
-    }
+        true
+    } else {
+        false
+    };
+
+    #[cfg(not(windows))]
+    let msyh_loaded = false;
 
     if msyh_loaded {
         if let Some(v) = fonts.families.get_mut(&FontFamily::Proportional) {
