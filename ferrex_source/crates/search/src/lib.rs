@@ -12,7 +12,6 @@ pub struct SearchOptions<'a> {
     pub include_dirs: bool,              // false = files only
     pub include_hidden:  bool,
     pub include_system:  bool,
-    pub drives:       &'a [String],      // active drive letters to search
 }
 
 impl Default for SearchOptions<'_> {
@@ -28,7 +27,6 @@ impl Default for SearchOptions<'_> {
             include_dirs: true,
             include_hidden: false,
             include_system: false,
-            drives: &[],
         }
     }
 }
@@ -72,9 +70,11 @@ impl<'a> Searcher<'a> {
             return Vec::new();
         }
 
-        // Compile regex once outside the parallel loop
         let regex_pattern: Option<regex::Regex> = if opts.use_regex && !opts.query.is_empty() {
-            regex::Regex::new(&format!("(?i){}", opts.query)).ok()
+            regex::RegexBuilder::new(opts.query)
+                .case_insensitive(true)
+                .build()
+                .ok()
         } else {
             None
         };
@@ -122,27 +122,39 @@ impl<'a> Searcher<'a> {
                     if timestamp > to { return false; }
                 }
 
-                // Get name from pool
+                // Get name bytes from pool
                 let offset = self.name_offsets[idx] as usize;
                 if offset >= self.string_pool.len() { return false; }
                 let name_bytes = &self.string_pool[offset..];
                 let end = name_bytes.iter().position(|&b| b == 0).unwrap_or(name_bytes.len());
                 let name_bytes = &name_bytes[..end];
-                let name = String::from_utf8_lossy(name_bytes);
 
                 // Extension filter
                 if let Some(ref ext_filter) = ext {
-                    let name_ext = name.rsplit('.').next().unwrap_or("").to_lowercase();
-                    if name_ext != *ext_filter { return false; }
+                    let dot_pos = name_bytes.iter().rposition(|&b| b == b'.');
+                    let name_ext = if let Some(p) = dot_pos {
+                        &name_bytes[p+1..]
+                    } else {
+                        &[]
+                    };
+
+                    if name_ext.len() != ext_filter.len() { return false; }
+                    if !name_ext.iter().zip(ext_filter.as_bytes().iter())
+                        .all(|(&a, &b)| a.to_ascii_lowercase() == b) {
+                        return false;
+                    }
                 }
 
                 // Name query
                 if !opts.query.is_empty() {
-                    let name_lower = name.to_lowercase();
                     if let Some(ref re) = regex_pattern {
-                        if !re.is_match(&name_lower) { return false; }
+                        if !re.is_match(std::str::from_utf8(name_bytes).unwrap_or("")) {
+                            return false;
+                        }
                     } else if let Some(ref f) = finder {
-                        if f.find(name_lower.as_bytes()).is_none() { return false; }
+                        if !contains_ignore_case(name_bytes, f.needle()) {
+                            return false;
+                        }
                     }
                 }
 
@@ -151,8 +163,6 @@ impl<'a> Searcher<'a> {
             .collect()
     }
 
-    /// Binary search for exact prefix match on sorted_idx
-    /// sorted_idx must be pre-built: records sorted by lowercase name
     pub fn search_prefix<'b>(
         &self,
         prefix: &str,
@@ -160,24 +170,28 @@ impl<'a> Searcher<'a> {
     ) -> &'b [u32] {
         if prefix.is_empty() { return sorted_idx; }
         let prefix_lower = prefix.to_lowercase();
+        let prefix_bytes = prefix_lower.as_bytes();
 
-        let get_name = |idx: u32| -> String {
+        let lo = sorted_idx.partition_point(|&idx| {
             let offset = self.name_offsets[idx as usize] as usize;
             let pool = &self.string_pool[offset..];
             let end = pool.iter().position(|&b| b == 0).unwrap_or(pool.len());
-            String::from_utf8_lossy(&pool[..end]).to_lowercase()
-        };
+            let name_bytes = &pool[..end];
+            compare_bytes_ignore_case(name_bytes, prefix_bytes) < 0
+        });
 
-        let lo = sorted_idx.partition_point(|&idx| get_name(idx) < prefix_lower);
         let hi = sorted_idx.partition_point(|&idx| {
-            let n = get_name(idx);
-            n < prefix_lower || n.starts_with(&prefix_lower)
+            let offset = self.name_offsets[idx as usize] as usize;
+            let pool = &self.string_pool[offset..];
+            let end = pool.iter().position(|&b| b == 0).unwrap_or(pool.len());
+            let name_bytes = &pool[..end];
+            let cmp = compare_bytes_ignore_case(name_bytes, prefix_bytes);
+            cmp < 0 || starts_with_ignore_case(name_bytes, prefix_bytes)
         });
 
         &sorted_idx[lo..hi]
     }
 
-    /// Backwards compatibility for search_with_ext
     pub fn search_with_ext(&self, query: &str, ext: Option<&str>) -> Vec<usize> {
         let opts = SearchOptions {
             query,
@@ -186,4 +200,41 @@ impl<'a> Searcher<'a> {
         };
         self.search(&opts)
     }
+}
+
+#[inline]
+fn contains_ignore_case(haystack: &[u8], needle_lower: &[u8]) -> bool {
+    if needle_lower.is_empty() { return true; }
+    if haystack.len() < needle_lower.len() { return false; }
+
+    for i in 0..=(haystack.len() - needle_lower.len()) {
+        let mut matched = true;
+        for j in 0..needle_lower.len() {
+            if haystack[i + j].to_ascii_lowercase() != needle_lower[j] {
+                matched = false;
+                break;
+            }
+        }
+        if matched { return true; }
+    }
+    false
+}
+
+fn compare_bytes_ignore_case(a: &[u8], b: &[u8]) -> i32 {
+    let len = a.len().min(b.len());
+    for i in 0..len {
+        let ca = a[i].to_ascii_lowercase();
+        let cb = b[i].to_ascii_lowercase();
+        if ca < cb { return -1; }
+        if ca > cb { return 1; }
+    }
+    if a.len() < b.len() { return -1; }
+    if a.len() > b.len() { return 1; }
+    0
+}
+
+fn starts_with_ignore_case(haystack: &[u8], prefix: &[u8]) -> bool {
+    if haystack.len() < prefix.len() { return false; }
+    haystack[..prefix.len()].iter().zip(prefix.iter())
+        .all(|(&a, &b)| a.to_ascii_lowercase() == b.to_ascii_lowercase())
 }

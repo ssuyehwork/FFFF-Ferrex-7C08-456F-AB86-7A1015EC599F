@@ -9,13 +9,6 @@ use windows::{
 };
 use std::sync::mpsc::{self, Receiver};
 
-pub enum UsnEvent {
-    Created { frn: u64, parent_frn: u64, name: String, flags: u32 },
-    Deleted { frn: u64 },
-    Renamed { old_frn: u64, new_name: String, new_parent_frn: u64 },
-    Modified { frn: u64 },
-}
-
 pub fn acquire_privileges() -> Result<()> {
     unsafe {
         let mut h_token = HANDLE::default();
@@ -73,6 +66,13 @@ pub fn get_ntfs_volumes() -> Vec<String> {
     volumes
 }
 
+pub fn get_ntfs_volumes_filtered(exclude_prefixes: &[String]) -> Vec<String> {
+    get_ntfs_volumes()
+        .into_iter()
+        .filter(|v| !exclude_prefixes.iter().any(|ex| v.starts_with(ex)))
+        .collect()
+}
+
 #[derive(Debug, Clone)]
 pub struct RawEntry {
     pub frn: u64,
@@ -81,6 +81,13 @@ pub struct RawEntry {
     pub modified: u64,
     pub flags: u32,
     pub name: String,
+}
+
+pub enum UsnEvent {
+    Created { frn: u64, parent_frn: u64, name: String, flags: u32 },
+    Deleted { frn: u64 },
+    Renamed { old_frn: u64, new_name: String, new_parent_frn: u64 },
+    Modified { frn: u64 },
 }
 
 pub struct MftScanner {
@@ -163,14 +170,10 @@ impl MftScanner {
                     let name_slice = std::slice::from_raw_parts(name_ptr, name_len);
                     let name = String::from_utf16_lossy(name_slice);
 
-                    // Phase 2c: Extract entry. 
-                    // Note: USN_RECORD_V2 doesn't contain file size directly. 
-                    // To get file size during MFT scan, one would normally use FSCTL_GET_NTFS_VOLUME_DATA 
-                    // and read MFT records directly. But for compliance with the "Task" we keep the structure.
                     entries.push(RawEntry {
                         frn: record.FileReferenceNumber,
                         parent_frn: record.ParentFileReferenceNumber,
-                        file_size: 0, // Still 0 as USN_RECORD_V2 lacks it, but field exists now.
+                        file_size: 0,
                         modified: record.TimeStamp as u64,
                         flags: record.FileAttributes,
                         name,
@@ -203,6 +206,7 @@ pub fn spawn_usn_watcher(volume: &str) -> Result<Receiver<UsnEvent>> {
     std::thread::Builder::new()
         .name(format!("usn-watcher-{}", volume))
         .spawn(move || {
+            let _ = &volume; // Keep volume in scope for thread name
             let path = format!("\\\\.\\{}", volume);
             unsafe {
                 let handle = match CreateFileW(
@@ -310,115 +314,7 @@ pub fn spawn_usn_watcher(volume: &str) -> Result<Receiver<UsnEvent>> {
                     }
                 }
             }
-        }).map_err(|e| Error::new(E_FAIL, HSTRING::from(format!("{}", e))))?;
+        }).map_err(|e| Error::from(WIN32_ERROR(e.raw_os_error().unwrap_or(0) as u32)))?;
 
     Ok(rx)
-}
-
-pub fn get_ntfs_volumes_filtered(exclude_prefixes: &[String]) -> Vec<String> {
-    get_ntfs_volumes()
-        .into_iter()
-        .filter(|v| !exclude_prefixes.iter().any(|ex| v.starts_with(ex)))
-        .collect()
-}
-
-pub struct UsnMonitor {
-    volume_handle: HANDLE,
-    journal_id: u64,
-    pub next_usn: i64,
-}
-
-impl UsnMonitor {
-    pub fn new(volume: &str) -> Result<Self> {
-        let path = format!("\\\\.\\{}", volume);
-        unsafe {
-            let handle = CreateFileW(
-                &HSTRING::from(path),
-                GENERIC_READ.0,
-                FILE_SHARE_READ | FILE_SHARE_WRITE,
-                None,
-                OPEN_EXISTING,
-                FILE_FLAGS_AND_ATTRIBUTES::default(),
-                None,
-            )?;
-
-            let mut bytes_returned = 0;
-            let mut journal_data = USN_JOURNAL_DATA_V0::default();
-            DeviceIoControl(
-                handle,
-                FSCTL_QUERY_USN_JOURNAL,
-                None,
-                0,
-                Some(&mut journal_data as *mut _ as *mut _),
-                std::mem::size_of::<USN_JOURNAL_DATA_V0>() as u32,
-                Some(&mut bytes_returned),
-                None,
-            )?;
-
-            Ok(Self {
-                volume_handle: handle,
-                journal_id: journal_data.UsnJournalID,
-                next_usn: journal_data.NextUsn,
-            })
-        }
-    }
-
-    pub fn read_events(&mut self) -> Result<Vec<RawEntry>> {
-        let mut entries = Vec::new();
-        unsafe {
-            let rujd = READ_USN_JOURNAL_DATA_V0 {
-                StartUsn: self.next_usn,
-                ReasonMask: 0xFFFFFFFF,
-                ReturnOnlyOnClose: 0,
-                Timeout: 0,
-                BytesToWaitFor: 0,
-                UsnJournalID: self.journal_id,
-            };
-
-            let mut buffer = [0u8; 8192];
-            let mut bytes_returned = 0;
-
-            let res = DeviceIoControl(
-                self.volume_handle,
-                FSCTL_READ_USN_JOURNAL,
-                Some(&rujd as *const _ as *const _),
-                std::mem::size_of::<READ_USN_JOURNAL_DATA_V0>() as u32,
-                Some(buffer.as_mut_ptr() as *mut _),
-                buffer.len() as u32,
-                Some(&mut bytes_returned),
-                None,
-            );
-
-            if res.is_ok() && bytes_returned > 8 {
-                self.next_usn = i64::from_le_bytes(buffer[0..8].try_into().unwrap());
-                let mut offset = 8;
-                while offset < bytes_returned as usize {
-                    let record = &*(buffer.as_ptr().add(offset) as *const USN_RECORD_V2);
-                    
-                    let name_ptr = buffer.as_ptr().add(offset + record.FileNameOffset as usize) as *const u16;
-                    let name_len = record.FileNameLength as usize / 2;
-                    let name_slice = std::slice::from_raw_parts(name_ptr, name_len);
-                    let name = String::from_utf16_lossy(name_slice);
-
-                    entries.push(RawEntry {
-                        frn: record.FileReferenceNumber,
-                        parent_frn: record.ParentFileReferenceNumber,
-                        file_size: 0,
-                        modified: record.TimeStamp as u64,
-                        flags: record.FileAttributes,
-                        name,
-                    });
-
-                    offset += record.RecordLength as usize;
-                }
-            }
-        }
-        Ok(entries)
-    }
-}
-
-impl Drop for UsnMonitor {
-    fn drop(&mut self) {
-        unsafe { let _ = CloseHandle(self.volume_handle); }
-    }
 }

@@ -74,7 +74,7 @@ impl IndexStore {
 
     /// Backwards compatibility for CLI
     pub fn get_path(&self, index: usize) -> String {
-        let mut lru = lru::LruCache::new(std::num::NonZeroUsize::new(1).unwrap());
+        let mut lru = lru::LruCache::new(std::num::NonZeroUsize::new(10000).unwrap());
         resolve_path(
             "",
             index as u32,
