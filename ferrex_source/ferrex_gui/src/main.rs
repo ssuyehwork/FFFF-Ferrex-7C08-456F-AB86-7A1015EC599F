@@ -161,8 +161,6 @@ struct FerrexApp {
     sort_asc: bool,
     #[allow(dead_code)]
     search_history: Vec<String>,
-    hovered_row: Option<usize>,
-    preview_pos: Option<Pos2>,
     icons: IconCache,
     status_text: String,
     is_scanning: bool,
@@ -195,8 +193,6 @@ impl FerrexApp {
             sort_col: SortColumn::Name,
             sort_asc: true,
             search_history: Vec::new(),
-            hovered_row: None,
-            preview_pos: None,
             icons: IconCache::new(),
             status_text: "准备就绪".to_string(),
             is_scanning: false,
@@ -468,7 +464,6 @@ impl eframe::App for FerrexApp {
                 ui.add(egui::Separator::default().spacing(0.0));
                 self.draw_results_list(ui);
             });
-            self.draw_hover_preview(ctx);
         });
     }
 }
@@ -714,8 +709,6 @@ impl FerrexApp {
     fn draw_results_list(&mut self, ui: &mut egui::Ui) {
         if self.results.is_empty() { self.draw_empty_state(ui); return; }
 
-        let mut new_hovered = None;
-        let mut new_preview_pos = None;
         let mut new_context_row = None;
         let mut new_selected = None;
 
@@ -733,7 +726,6 @@ impl FerrexApp {
                     ui.painter().rect_filled(rect, Rounding::ZERO, bg);
                     if is_selected || is_hovered { ui.painter().line_segment([rect.left_top(), rect.left_bottom()], Stroke::new(3.0, ACCENT)); }
 
-                    if is_hovered { new_hovered = Some(idx); new_preview_pos = Some(rect.right_top()); }
                     if response.clicked() { new_selected = Some(idx); }
                     if response.secondary_clicked() { new_context_row = Some(idx); }
 
@@ -763,8 +755,6 @@ impl FerrexApp {
             });
         });
 
-        self.hovered_row = new_hovered;
-        self.preview_pos = new_preview_pos;
         if let Some(idx) = new_selected {
             let modifiers = ui.input(|i| i.modifiers);
             if modifiers.command {
@@ -794,24 +784,6 @@ impl FerrexApp {
                 });
             });
             if close_menu || (ui.input(|i| i.pointer.any_click()) && !ui.input(|i| i.pointer.secondary_down())) { self.context_menu_row = None; }
-        }
-    }
-
-    fn draw_hover_preview(&self, ctx: &egui::Context) {
-        if let (Some(idx), Some(pos)) = (self.hovered_row, self.preview_pos) {
-            if let Some(result) = self.results.get(idx) {
-                Area::new(Id::new("preview")).fixed_pos(pos + Vec2::new(12.0, 0.0)).order(Order::Tooltip).show(ctx, |ui| {
-                    Frame::none().fill(PANEL).stroke(Stroke::new(1.0, BORDER2)).inner_margin(Margin::same(12.0)).show(ui, |ui| {
-                        ui.set_min_width(260.0);
-                        ui.label(RichText::new(&result.name).font(FontId::new(13.0, FontFamily::Name("mono".into()))).color(ACCENT));
-                        ui.add_space(6.0);
-                        preview_row(ui, "路径", &result.full_path);
-                        preview_row(ui, "大小", &format_size(result.size));
-                        preview_row(ui, "修改时间", &format_timestamp(result.timestamp));
-                        preview_row(ui, "类型", if result.is_dir { "目录" } else { "文件" });
-                    });
-                });
-            }
         }
     }
 
@@ -916,13 +888,6 @@ fn stat_item(ui: &mut egui::Ui, label: &str, value: &str) {
     ui.label(RichText::new(value).font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT2).strong()); 
 }
 
-fn preview_row(ui: &mut egui::Ui, label: &str, value: &str) { 
-    ui.horizontal(|ui| { 
-        ui.label(RichText::new(label).font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3)); 
-        ui.add_space(8.0); 
-        ui.label(RichText::new(value).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(TEXT2)); 
-    }); 
-}
 
 fn menu_item(ui: &mut egui::Ui, label: &str) -> bool {
     ui.add(egui::Button::new(RichText::new(label).font(FontId::new(11.0, FontFamily::Name("cond".into()))).color(TEXT2)).fill(Color32::TRANSPARENT)).clicked()
