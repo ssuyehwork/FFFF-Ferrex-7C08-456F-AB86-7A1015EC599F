@@ -39,6 +39,18 @@ const TEXT: Color32 = Color32::from_rgb(200, 212, 220);
 const TEXT2: Color32 = Color32::from_rgb(122, 143, 158);
 const TEXT3: Color32 = Color32::from_rgb(61, 80, 96);
 
+// UI Layout Constants
+const TITLE_BAR_HEIGHT: f32 = 32.0;
+const DRIVE_BAR_HEIGHT: f32 = 40.0;
+const STATUS_BAR_HEIGHT: f32 = 26.0;
+const ROW_HEIGHT: f32 = 30.0;
+const SEARCH_BAR_HEIGHT: f32 = 34.0;
+
+const NAME_COL_W: f32 = 260.0;
+const SIZE_COL_W: f32 = 80.0;
+const DATE_COL_W: f32 = 130.0;
+const ICON_SECTION_W: f32 = 58.0; // 8 (space) + 14 (icon) + 8 (space) + 22 (tag) + 6 (space)
+
 struct IconCache {
     textures: HashMap<String, egui::TextureHandle>,
 }
@@ -468,28 +480,34 @@ impl eframe::App for FerrexApp {
         }
 
         egui::TopBottomPanel::top("titlebar")
-            .exact_height(32.0)
+            .exact_height(TITLE_BAR_HEIGHT)
             .frame(Frame::none().fill(PANEL).inner_margin(Margin::symmetric(8.0, 0.0)))
             .show(ctx, |ui| { self.draw_titlebar(ui); });
 
         egui::TopBottomPanel::top("drives")
-            .exact_height(40.0)
+            .exact_height(DRIVE_BAR_HEIGHT)
             .frame(Frame::none().fill(BG2).inner_margin(Margin::symmetric(16.0, 0.0)))
             .show(ctx, |ui| { self.draw_drive_selector(ui, ctx); });
 
-        egui::TopBottomPanel::top("searchbar_area").frame(Frame::none().fill(PANEL)).show(ctx, |ui| {
-            Frame::none().inner_margin(Margin::symmetric(16.0, 8.0)).show(ui, |ui| {
-                self.draw_search_bar(ui, ctx);
+        egui::TopBottomPanel::top("searchbar_area")
+            .frame(Frame::none().fill(PANEL))
+            .show(ctx, |ui| {
+                ui.vertical(|ui| {
+                    Frame::none().inner_margin(Margin::symmetric(16.0, 8.0)).show(ui, |ui| {
+                        self.draw_search_bar(ui, ctx);
+                    });
+                    if self.is_scanning {
+                        ui.add(egui::ProgressBar::new(self.scan_progress)
+                            .text(RichText::new(&self.status_text).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(ACCENT))
+                            .fill(ACCENT).desired_height(2.0).rounding(Rounding::ZERO));
+                    } else {
+                        ui.add_space(2.0); // 占位符，防止布局抖动
+                    }
+                });
             });
-            if self.is_scanning { 
-                ui.add(egui::ProgressBar::new(self.scan_progress)
-                    .text(RichText::new(&self.status_text).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(ACCENT))
-                    .fill(ACCENT).desired_height(2.0).rounding(Rounding::ZERO)); 
-            }
-        });
 
         egui::TopBottomPanel::bottom("statusbar")
-            .exact_height(26.0)
+            .exact_height(STATUS_BAR_HEIGHT)
             .frame(Frame::none().fill(PANEL).inner_margin(Margin::symmetric(16.0, 0.0)))
             .show(ctx, |ui| { self.draw_status_bar(ui); });
 
@@ -654,80 +672,97 @@ impl FerrexApp {
         let mut toggle_drive = None;
         let mut ignore_drive = None;
         let mut set_default = None;
+        let mut restore_drive = None;
 
-        ui.horizontal_centered(|ui| {
-            ui.label(RichText::new("DRIVES").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3));
+        ui.horizontal(|ui| {
+            ui.add_space(0.0);
+            ui.set_height(DRIVE_BAR_HEIGHT);
+
+            ui.vertical_centered(|ui| {
+                ui.add_space(14.0);
+                ui.label(RichText::new("DRIVES").font(FontId::new(9.0, FontFamily::Name("cond".into()))).color(TEXT3));
+            });
             ui.add_space(8.0);
 
             // 全选 / 全清 逻辑
-            if ui.link(RichText::new("全选").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3)).clicked() {
-                for store in &self.stores {
-                    self.active_drives.insert(store.drive.clone());
-                }
-                self.run_search(ctx);
-            }
-            ui.add_space(4.0);
-            if ui.link(RichText::new("全清").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3)).clicked() {
-                if let Some(ref def) = self.default_drive {
-                    self.active_drives.clear();
-                    self.active_drives.insert(def.clone());
-                    self.run_search(ctx);
-                }
-            }
+            ui.vertical_centered(|ui| {
+                ui.add_space(13.0);
+                ui.horizontal(|ui| {
+                    if ui.link(RichText::new("全选").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3)).clicked() {
+                        for store in &self.stores {
+                            self.active_drives.insert(store.drive.clone());
+                        }
+                        self.run_search(ctx);
+                    }
+                    ui.add_space(4.0);
+                    if ui.link(RichText::new("全清").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3)).clicked() {
+                        if let Some(ref def) = self.default_drive {
+                            self.active_drives.clear();
+                            self.active_drives.insert(def.clone());
+                            self.run_search(ctx);
+                        }
+                    }
+                });
+            });
+
             ui.add_space(8.0);
-            for store in &self.stores {
-                let is_active = self.active_drives.contains(&store.drive);
-                let is_default = self.default_drive.as_ref() == Some(&store.drive);
-                let label = if is_default { format!("★ {}:  {}", store.drive, format_count(store.record_count)) } 
-                            else { format!("{}:  {}", store.drive, format_count(store.record_count)) };
 
-                let (bg, stroke_color, text_color) = if is_active { (Color32::from_rgba_unmultiplied(255, 140, 0, 30), ACCENT, ACCENT) } else { (BG3, BORDER2, TEXT2) };
-                
-                let btn = egui::Button::new(RichText::new(&label).font(FontId::new(12.0, FontFamily::Name("cond".into()))).color(text_color))
-                    .fill(bg)
-                    .stroke(Stroke::new(1.0, stroke_color))
-                    .rounding(Rounding::ZERO);
-                
-                let response = ui.add(btn);
-                if response.clicked() {
-                    toggle_drive = Some((store.drive.clone(), is_active));
-                }
-                
-                let drive = store.drive.clone();
-                response.context_menu(|ui| {
-                    ui.set_min_width(140.0);
-                    if menu_item(ui, "设为默认选项") {
-                        set_default = Some(drive.clone());
-                        ui.close_menu();
+            ScrollArea::horizontal().id_source("drives_scroll").show(ui, |ui| {
+                ui.horizontal_centered(|ui| {
+                    for store in &self.stores {
+                        let is_active = self.active_drives.contains(&store.drive);
+                        let is_default = self.default_drive.as_ref() == Some(&store.drive);
+                        let label = if is_default { format!("★ {}:  {}", store.drive, format_count(store.record_count)) }
+                                    else { format!("{}:  {}", store.drive, format_count(store.record_count)) };
+
+                        let (bg, stroke_color, text_color) = if is_active { (Color32::from_rgba_unmultiplied(255, 140, 0, 30), ACCENT, ACCENT) } else { (BG3, BORDER2, TEXT2) };
+
+                        let btn = egui::Button::new(RichText::new(&label).font(FontId::new(12.0, FontFamily::Name("cond".into()))).color(text_color))
+                            .fill(bg)
+                            .stroke(Stroke::new(1.0, stroke_color))
+                            .rounding(Rounding::ZERO);
+
+                        let response = ui.add(btn);
+                        if response.clicked() {
+                            toggle_drive = Some((store.drive.clone(), is_active));
+                        }
+
+                        let drive = store.drive.clone();
+                        response.context_menu(|ui| {
+                            ui.set_min_width(140.0);
+                            if menu_item(ui, "设为默认选项") {
+                                set_default = Some(drive.clone());
+                                ui.close_menu();
+                            }
+                            if menu_item(ui, "忽略此驱动器") {
+                                ignore_drive = Some(drive);
+                                ui.close_menu();
+                            }
+                        });
+                        ui.add_space(4.0);
                     }
-                    if menu_item(ui, "忽略此驱动器") {
-                        ignore_drive = Some(drive);
-                        ui.close_menu();
+
+                    // 绘制被忽略的驱动器
+                    for ignored in &self.ignored_drives {
+                        let label = format!("{}: IGNORED", ignored);
+                        let btn = egui::Button::new(RichText::new(&label).font(FontId::new(12.0, FontFamily::Name("cond".into()))).color(TEXT3))
+                            .fill(Color32::TRANSPARENT)
+                            .stroke(Stroke::new(1.0, TEXT3.gamma_multiply(0.2)))
+                            .rounding(Rounding::ZERO);
+                        let response = ui.add(btn);
+
+                        let drive = ignored.clone();
+                        response.context_menu(|ui| {
+                            ui.set_min_width(120.0);
+                            if menu_item(ui, "恢复驱动器") {
+                                restore_drive = Some(drive);
+                                ui.close_menu();
+                            }
+                        });
+                        ui.add_space(4.0);
                     }
                 });
-                ui.add_space(4.0);
-            }
-
-            // 绘制被忽略的驱动器（半透明显示）
-            let mut restore_drive = None;
-            for ignored in &self.ignored_drives {
-                let label = format!("{}: IGNORED", ignored);
-                let btn = egui::Button::new(RichText::new(&label).font(FontId::new(12.0, FontFamily::Name("cond".into()))).color(TEXT3))
-                    .fill(Color32::TRANSPARENT)
-                    .stroke(Stroke::new(1.0, TEXT3.gamma_multiply(0.2)))
-                    .rounding(Rounding::ZERO);
-                let response = ui.add(btn);
-                
-                let drive = ignored.clone();
-                response.context_menu(|ui| {
-                    ui.set_min_width(120.0);
-                    if menu_item(ui, "恢复驱动器") {
-                        restore_drive = Some(drive);
-                        ui.close_menu();
-                    }
-                });
-                ui.add_space(4.0);
-            }
+            });
             if let Some(drive) = set_default {
                 self.default_drive = Some(drive);
             }
@@ -761,7 +796,7 @@ impl FerrexApp {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 
                 // 搜索图标
-                let (icon_rect, _) = ui.allocate_exact_size(Vec2::new(36.0, 34.0), Sense::hover());
+                let (icon_rect, _) = ui.allocate_exact_size(Vec2::new(36.0, SEARCH_BAR_HEIGHT), Sense::hover());
                 let c = Pos2::new(icon_rect.center().x - 2.0, icon_rect.center().y - 2.0);
                 ui.painter().circle_stroke(c, 5.5, Stroke::new(1.5, TEXT3));
                 ui.painter().line_segment([Pos2::new(c.x + 4.0, c.y + 4.0), Pos2::new(c.x + 8.0, c.y + 8.0)], Stroke::new(1.5, TEXT3));
@@ -774,10 +809,10 @@ impl FerrexApp {
                     .margin(Margin::symmetric(4.0, 8.0)) // 增加垂直边距以实现居中感
                     .text_color(TEXT);
 
-                let search_response = ui.add_sized(Vec2::new(ui.available_width() - 80.0 - 24.0 - 100.0, 34.0), search_edit);
+                let search_response = ui.add_sized(Vec2::new(ui.available_width() - 80.0 - 24.0 - 100.0, SEARCH_BAR_HEIGHT), search_edit);
                 
                 // 分隔符点号
-                let (dot_rect, _) = ui.allocate_exact_size(Vec2::new(24.0, 34.0), Sense::hover());
+                let (dot_rect, _) = ui.allocate_exact_size(Vec2::new(24.0, SEARCH_BAR_HEIGHT), Sense::hover());
                 ui.painter().rect_filled(dot_rect, Rounding::ZERO, BG3);
                 ui.painter().text(dot_rect.center(), Align2::CENTER_CENTER, ".", FontId::new(16.0, FontFamily::Name("mono".into())), ACCENT);
                 
@@ -788,7 +823,7 @@ impl FerrexApp {
                     .frame(false)
                     .margin(Margin::symmetric(4.0, 8.0))
                     .text_color(TEXT);
-                let ext_response = ui.add_sized(Vec2::new(80.0, 34.0), ext_edit);
+                let ext_response = ui.add_sized(Vec2::new(80.0, SEARCH_BAR_HEIGHT), ext_edit);
                 
                 // 搜索按钮
                 ui.add_space(1.0); // 极小间距
@@ -796,7 +831,7 @@ impl FerrexApp {
                     .fill(ACCENT)
                     .rounding(Rounding::ZERO);
                 
-                if ui.add_sized(Vec2::new(80.0, 34.0), search_btn).clicked() || search_response.changed() || ext_response.changed() { 
+                if ui.add_sized(Vec2::new(80.0, SEARCH_BAR_HEIGHT), search_btn).clicked() || search_response.changed() || ext_response.changed() {
                     self.run_search(ctx); 
                 }
             });
@@ -806,18 +841,15 @@ impl FerrexApp {
     fn draw_column_header(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
-            ui.add_space(58.0); // 8 + 14 + 8 + 22 + 6
+            ui.add_space(ICON_SECTION_W);
             
             let total_w = ui.available_width();
-            let name_w = 260.0;
-            let size_w = 80.0;
-            let date_w = 130.0;
-            let path_w = total_w - name_w - size_w - date_w - 32.0;
+            let path_w = total_w - NAME_COL_W - SIZE_COL_W - DATE_COL_W - 32.0;
 
-            if header_label(ui, "NAME", name_w) { self.sort_col = SortColumn::Name; self.sort_asc = !self.sort_asc; self.apply_sort(); }
+            if header_label(ui, "NAME", NAME_COL_W) { self.sort_col = SortColumn::Name; self.sort_asc = !self.sort_asc; self.apply_sort(); }
             if header_label(ui, "PATH", path_w) { self.sort_col = SortColumn::Path; self.sort_asc = !self.sort_asc; self.apply_sort(); }
-            if header_label(ui, "SIZE", size_w) { self.sort_col = SortColumn::Size; self.sort_asc = !self.sort_asc; self.apply_sort(); }
-            if header_label(ui, "DATE", date_w) { self.sort_col = SortColumn::Date; self.sort_asc = !self.sort_asc; self.apply_sort(); }
+            if header_label(ui, "SIZE", SIZE_COL_W) { self.sort_col = SortColumn::Size; self.sort_asc = !self.sort_asc; self.apply_sort(); }
+            if header_label(ui, "DATE", DATE_COL_W) { self.sort_col = SortColumn::Date; self.sort_asc = !self.sort_asc; self.apply_sort(); }
         });
     }
 
@@ -834,7 +866,7 @@ impl FerrexApp {
             ui.with_layout(Layout::top_down(Align::Min), |ui| {
                 for idx in 0..results_to_show {
                     let is_selected = self.selected_rows.contains(&idx);
-                    let (rect, response) = ui.allocate_at_least(Vec2::new(available_width, 30.0), Sense::click());
+                    let (rect, response) = ui.allocate_at_least(Vec2::new(available_width, ROW_HEIGHT), Sense::click());
                     let is_hovered = response.hovered();
                     
                     let bg = if is_selected { Color32::from_rgba_unmultiplied(255, 140, 0, 25) } else if is_hovered { BG3 } else if idx % 2 == 0 { BG } else { BG2 };
@@ -845,25 +877,29 @@ impl FerrexApp {
                     if response.secondary_clicked() { new_context_row = Some(idx); }
                     
                     let mut child_ui = ui.child_ui(rect, Layout::left_to_right(Align::Center), None);
-                    child_ui.add_space(8.0);
+
+                    // 图标与标签区域 (ICON_SECTION_W)
+                    let (icon_rect, _) = child_ui.allocate_exact_size(Vec2::new(ICON_SECTION_W, ROW_HEIGHT), Sense::hover());
+                    let mut icon_ui = child_ui.child_ui(icon_rect, Layout::left_to_right(Align::Center), None);
+                    icon_ui.spacing_mut().item_spacing.x = 0.0;
+                    icon_ui.add_space(8.0);
                     
                     let result = &self.results[idx];
-                    child_ui.add(Image::new(self.icons.get_for_path(ui.ctx(), &result.name, result.is_dir)).max_size(Vec2::new(14.0, 14.0)));
-                    child_ui.add_space(8.0);
+                    icon_ui.add(Image::new(self.icons.get_for_path(ui.ctx(), &result.name, result.is_dir)).max_size(Vec2::new(14.0, 14.0)));
+                    icon_ui.add_space(8.0);
                     
-                    let (tag_rect, _) = child_ui.allocate_exact_size(Vec2::new(22.0, 14.0), Sense::hover());
-                    child_ui.painter().rect_stroke(tag_rect, 1.0, Stroke::new(1.0, BORDER2));
-                    child_ui.painter().text(tag_rect.center(), Align2::CENTER_CENTER, &result.drive[..2], FontId::new(9.0, FontFamily::Name("cond".into())), TEXT3);
-                    child_ui.add_space(6.0);
+                    let (tag_rect, _) = icon_ui.allocate_exact_size(Vec2::new(22.0, 14.0), Sense::hover());
+                    icon_ui.painter().rect_stroke(tag_rect, 1.0, Stroke::new(1.0, BORDER2));
+                    icon_ui.painter().text(tag_rect.center(), Align2::CENTER_CENTER, &result.drive[..2], FontId::new(9.0, FontFamily::Name("cond".into())), TEXT3);
                     
-                    child_ui.add_sized([260.0, 20.0], Label::new(RichText::new(&result.name).font(FontId::new(12.5, FontFamily::Name("mono".into()))).color(TEXT)).truncate());
+                    child_ui.add_sized([NAME_COL_W, 20.0], Label::new(RichText::new(&result.name).font(FontId::new(12.5, FontFamily::Name("mono".into()))).color(TEXT)).truncate());
                     
                     let remaining_w = child_ui.available_width();
-                    let path_w = remaining_w - 80.0 - 130.0 - 32.0;
+                    let path_w = remaining_w - SIZE_COL_W - DATE_COL_W - 32.0;
                     child_ui.add_sized([path_w, 20.0], Label::new(RichText::new(&result.full_path).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(TEXT3)).truncate());
                     
-                    child_ui.add_sized([80.0, 20.0], Label::new(RichText::new(format_size(result.size)).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(TEXT2)));
-                    child_ui.add_sized([130.0, 20.0], Label::new(RichText::new(format_timestamp(result.timestamp)).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(TEXT3)));
+                    child_ui.add_sized([SIZE_COL_W, 20.0], Label::new(RichText::new(format_size(result.size)).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(TEXT2)));
+                    child_ui.add_sized([DATE_COL_W, 20.0], Label::new(RichText::new(format_timestamp(result.timestamp)).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(TEXT3)));
                 }
             });
         });
