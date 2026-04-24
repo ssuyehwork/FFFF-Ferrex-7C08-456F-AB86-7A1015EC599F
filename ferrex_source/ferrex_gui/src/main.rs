@@ -39,6 +39,7 @@ const DANGER: Color32 = Color32::from_rgb(231, 76, 60);
 const TEXT: Color32 = Color32::from_rgb(200, 212, 220);
 const TEXT2: Color32 = Color32::from_rgb(122, 143, 158);
 const TEXT3: Color32 = Color32::from_rgb(61, 80, 96);
+const SUCCESS: Color32 = Color32::from_rgb(70, 180, 120);
 
 #[derive(Serialize, Deserialize, Default)]
 struct AppConfig {
@@ -327,8 +328,10 @@ impl FerrexApp {
         use tray_icon::TrayIconEvent;
         let should_exit = self.should_exit.clone();
         let tray_menu = Menu::new();
-        let show_i = MenuItem::with_id(MenuId::new("show_main"), "打开主界面", true, None);
-        let quit_i = MenuItem::with_id(MenuId::new("quit"), "退出 Ferrex", true, None);
+        let show_id = MenuId::new("show_main");
+        let quit_id = MenuId::new("quit");
+        let show_i = MenuItem::with_id(show_id.clone(), "打开主界面", true, None);
+        let quit_i = MenuItem::with_id(quit_id.clone(), "退出 Ferrex", true, None);
         let _ = tray_menu.append_items(&[&show_i, &quit_i]);
 
         if let Some(icon) = load_icon() {
@@ -345,25 +348,34 @@ impl FerrexApp {
                 let menu_rx = MenuEvent::receiver();
                 let tray_rx = TrayIconEvent::receiver();
                 loop {
-                    if let Ok(event) = menu_rx.try_recv() {
-                        if event.id.0 == "show_main" {
+                    // 使用 while let 处理所有积压事件
+                    while let Ok(event) = menu_rx.try_recv() {
+                        if event.id == show_id {
                             ctx.send_viewport_cmd(ViewportCommand::Visible(true));
                             ctx.send_viewport_cmd(ViewportCommand::Focus);
-                        } else if event.id.0 == "quit" {
+                            ctx.request_repaint();
+                        } else if event.id == quit_id {
                             should_exit.store(true, Ordering::SeqCst);
                             ctx.send_viewport_cmd(ViewportCommand::Close);
+                            ctx.request_repaint();
+                            // 保底退出逻辑：如果 1 秒后主线程没退，强行杀掉进程
+                            std::thread::spawn(|| {
+                                std::thread::sleep(std::time::Duration::from_secs(1));
+                                std::process::exit(0);
+                            });
                         }
                     }
-                    if let Ok(event) = tray_rx.try_recv() {
+                    while let Ok(event) = tray_rx.try_recv() {
                         match event {
                             TrayIconEvent::Click { .. } => {
                                 ctx.send_viewport_cmd(ViewportCommand::Visible(true));
                                 ctx.send_viewport_cmd(ViewportCommand::Focus);
+                                ctx.request_repaint();
                             }
                             _ => {}
                         }
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    std::thread::sleep(std::time::Duration::from_millis(16));
                 }
             });
         }
@@ -565,7 +577,7 @@ impl FerrexApp {
             
             // 记录总数显示
             let total_records: usize = self.stores.iter().map(|s| s.record_count).sum();
-            ui.label(RichText::new(format!("READY — {}", format_number(total_records))).font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3));
+            ui.label(RichText::new(format!("READY — {}", format_number(total_records))).font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(SUCCESS));
 
             // 中间拖拽区域
             let drag_rect = ui.available_rect_before_wrap();
