@@ -523,7 +523,7 @@ impl eframe::App for FerrexApp {
             .show(ctx, |ui| { self.draw_drive_selector(ui, ctx); });
 
         egui::TopBottomPanel::top("searchbar_area")
-            .exact_height(if self.is_scanning { 50.0 } else { 48.0 })
+            .exact_height(50.0) // 固定高度，消除 ProgressBar 切换导致的界面抖动
             .frame(Frame::none().fill(PANEL))
             .show(ctx, |ui| {
                 // 搜索区域边距规范：左侧 5.0，上下保持 8.0
@@ -570,11 +570,12 @@ impl FerrexApp {
 
     fn draw_titlebar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_centered(|ui| {
-            ui.add_space(8.0);
+            // 全局 5px 间距规范
+            ui.add_space(5.0);
             ui.add(egui::Image::new(egui::include_image!("../../ferrex.png")).max_size(Vec2::new(18.0, 18.0)));
-            ui.add_space(8.0);
+            ui.add_space(5.0);
             ui.label(RichText::new("FERREX").font(FontId::new(14.0, FontFamily::Name("cond".into()))).color(ACCENT).extra_letter_spacing(1.5));
-            ui.add_space(12.0);
+            ui.add_space(5.0);
             
             // 记录总数显示
             let total_records: usize = self.stores.iter().map(|s| s.record_count).sum();
@@ -592,7 +593,7 @@ impl FerrexApp {
                 
                 let icon_normal = Color32::from_rgb(238, 238, 238); // #EEEEEE
 
-                // 关闭按钮
+                // 关闭按钮：持续显示基础色，悬停纯红高亮，移除白色叠加
                 let close_response = self.draw_svg_button(
                     ui, 
                     egui::include_image!("../icons/close.svg"), 
@@ -697,9 +698,10 @@ impl FerrexApp {
         let mut toggle_drive = None;
         let mut ignore_drive = None;
 
-        ui.horizontal_centered(|ui| {
+        ScrollArea::horizontal().show(ui, |ui| {
+            ui.horizontal_centered(|ui| {
             ui.label(RichText::new("DRIVES").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3));
-            ui.add_space(8.0);
+            ui.add_space(5.0);
 
             // 全选 / 全清 逻辑
             if ui.link(RichText::new("全选").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3)).clicked() {
@@ -710,7 +712,7 @@ impl FerrexApp {
                 self.config.save();
                 self.run_search(ctx);
             }
-            ui.add_space(4.0);
+            ui.add_space(5.0);
             if ui.link(RichText::new("全清").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3)).clicked() {
                 self.active_drives.clear();
                 for def in &self.config.default_drives {
@@ -720,7 +722,7 @@ impl FerrexApp {
                 self.config.save();
                 self.run_search(ctx);
             }
-            ui.add_space(8.0);
+            ui.add_space(5.0);
             for store in &self.stores {
                 let is_active = self.active_drives.contains(&store.drive);
                 let is_default = self.config.default_drives.contains(&store.drive);
@@ -757,7 +759,7 @@ impl FerrexApp {
                         ui.close_menu();
                     }
                 });
-                ui.add_space(4.0);
+            ui.add_space(5.0);
             }
 
             // 绘制被忽略的驱动器（半透明显示）
@@ -778,7 +780,7 @@ impl FerrexApp {
                         ui.close_menu();
                     }
                 });
-                ui.add_space(4.0);
+            ui.add_space(5.0);
             }
             if let Some(drive) = ignore_drive {
                 self.config.ignored_drives.insert(drive.clone());
@@ -794,6 +796,7 @@ impl FerrexApp {
                 self.load_volumes();
                 self.run_search(ctx);
             }
+        });
         });
 
         if let Some((drive, was_active)) = toggle_drive {
@@ -885,37 +888,39 @@ impl FerrexApp {
         ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.with_layout(Layout::top_down(Align::Min), |ui| {
                 for idx in 0..results_to_show {
-                    let is_selected = self.selected_rows.contains(&idx);
                     let (rect, response) = ui.allocate_at_least(Vec2::new(available_width, 30.0), Sense::click());
                     let is_hovered = response.hovered();
                     
-                    let bg = if is_selected { Color32::from_rgba_unmultiplied(255, 140, 0, 25) } else if is_hovered { BG3 } else if idx % 2 == 0 { BG } else { BG2 };
+                    // 仅保留斑马纹和悬停背景，彻底移除选中橙色高亮
+                    let bg = if is_hovered { BG3 } else if idx % 2 == 0 { BG } else { BG2 };
                     ui.painter().rect_filled(rect, Rounding::ZERO, bg);
-                    if is_selected || is_hovered { ui.painter().line_segment([rect.left_top(), rect.left_bottom()], Stroke::new(1.0, ACCENT)); }
                     
                     if response.clicked() { new_selected = Some(idx); }
                     if response.secondary_clicked() { new_context_row = Some(idx); }
                     
-                    let mut child_ui = ui.child_ui(rect, Layout::left_to_right(Align::Center), None);
-                    child_ui.add_space(8.0);
+                    // 铁律：必须全部向左对齐 (Align::Min)
+                    let mut child_ui = ui.child_ui(rect, Layout::left_to_right(Align::Min), None);
+                    child_ui.add_space(5.0);
                     
                     let result = &self.results[idx];
                     child_ui.add(Image::new(self.icons.get_for_path(ui.ctx(), &result.name, result.is_dir)).max_size(Vec2::new(14.0, 14.0)));
-                    child_ui.add_space(8.0);
+                    child_ui.add_space(5.0);
                     
                     let (tag_rect, _) = child_ui.allocate_exact_size(Vec2::new(22.0, 14.0), Sense::hover());
                     child_ui.painter().rect_stroke(tag_rect, 1.0, Stroke::new(1.0, BORDER2));
-                    child_ui.painter().text(tag_rect.center(), Align2::CENTER_CENTER, &result.drive[..2], FontId::new(9.0, FontFamily::Name("cond".into())), TEXT3);
+                    // 标注 ①：驱动器标签改为白色
+                    child_ui.painter().text(tag_rect.center(), Align2::CENTER_CENTER, &result.drive[..2], FontId::new(9.0, FontFamily::Name("cond".into())), Color32::WHITE);
                     child_ui.add_space(6.0);
                     
-                    child_ui.add_sized([260.0, 20.0], Label::new(RichText::new(&result.name).font(FontId::new(12.5, FontFamily::Name("mono".into()))).color(Color32::WHITE)).truncate());
+                    // 显式指定 halign(Align::Min) 杜绝顽固居中
+                    child_ui.add_sized([260.0, 20.0], Label::new(RichText::new(&result.name).font(FontId::new(12.5, FontFamily::Name("mono".into()))).color(Color32::WHITE)).truncate().halign(Align::Min));
                     
                     let remaining_w = child_ui.available_width();
                     let path_w = remaining_w - 80.0 - 130.0 - 32.0;
-                    child_ui.add_sized([path_w, 20.0], Label::new(RichText::new(&result.full_path).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(Color32::WHITE)).truncate());
+                    child_ui.add_sized([path_w, 20.0], Label::new(RichText::new(&result.full_path).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(Color32::WHITE)).truncate().halign(Align::Min));
                     
-                    child_ui.add_sized([80.0, 20.0], Label::new(RichText::new(format_size(result.size)).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(Color32::WHITE)));
-                    child_ui.add_sized([130.0, 20.0], Label::new(RichText::new(format_timestamp(result.timestamp)).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(Color32::WHITE)));
+                    child_ui.add_sized([80.0, 20.0], Label::new(RichText::new(format_size(result.size)).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(Color32::WHITE)).halign(Align::Min));
+                    child_ui.add_sized([130.0, 20.0], Label::new(RichText::new(format_timestamp(result.timestamp)).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(Color32::WHITE)).halign(Align::Min));
                 }
             });
         });
@@ -1038,16 +1043,17 @@ impl FerrexApp {
 fn header_label(ui: &mut egui::Ui, text: &str, width: f32) -> bool {
     let (rect, response) = ui.allocate_at_least(Vec2::new(width, 20.0), Sense::click());
     if ui.is_rect_visible(rect) {
-        let mut child_ui = ui.child_ui(rect, Layout::left_to_right(Align::Center), None);
+        // 铁律：表头文字也必须全部向左对齐
+        let mut child_ui = ui.child_ui(rect, Layout::left_to_right(Align::Min), None);
         let color = if response.hovered() { ACCENT } else { Color32::WHITE };
-        child_ui.add(Label::new(RichText::new(text).font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(color).extra_letter_spacing(1.5)));
+        child_ui.add(Label::new(RichText::new(text).font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(color).extra_letter_spacing(1.5)).halign(Align::Min));
     }
     response.clicked()
 }
 
 fn stat_item(ui: &mut egui::Ui, label: &str, value: &str) { 
     ui.label(RichText::new(label).font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3)); 
-    ui.add_space(4.0); 
+    ui.add_space(5.0);
     ui.label(RichText::new(value).font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT2).strong()); 
 }
 
