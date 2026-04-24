@@ -921,30 +921,52 @@ impl FerrexApp {
     fn draw_search_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let frame = Frame::none().fill(BG2).stroke(Stroke::new(1.0, BORDER2)).rounding(Rounding::ZERO);
         frame.show(ui, |ui| {
-            ui.horizontal(|ui| {
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 5.0;
                 ui.add_space(8.0);
+
+                // 搜索图标，显式垂直居中
                 ui.add(egui::Image::new(egui::include_image!("../icons/search.svg")).max_size(Vec2::splat(16.0)).tint(ACCENT));
+
                 let search_edit = TextEdit::singleline(&mut self.query).font(FontId::new(13.0, FontFamily::Name("mono".into()))).hint_text(RichText::new("文件名 / 关键词...").color(TEXT3)).frame(false).margin(Margin::symmetric(4.0, 8.0)).text_color(TEXT);
-                let search_w = ui.available_width() - 80.0 - 24.0 - 100.0 - 5.0; // 减去 5 像素右间距
+
+                // 计算中间区域宽度
+                let search_btn_w = 80.0;
+                let ext_w = 80.0;
+                let sep_w = 24.0;
+                let padding = 8.0 + 5.0 * 4.0 + 5.0; // 各种间距之和
+                let search_w = ui.available_width() - search_btn_w - ext_w - sep_w - padding;
+
                 let search_response = ui.add_sized(Vec2::new(search_w, 34.0), search_edit);
                 let query_pop_id = ui.id().with("query_pop");
                 if ui.interact(search_response.rect, ui.id().with("search_hit"), Sense::click()).double_clicked() { ui.memory_mut(|m| m.open_popup(query_pop_id)); }
                 egui::popup_below_widget(ui, query_pop_id, &search_response, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| { self.draw_history_popup_content(ui, ctx, true, search_w); });
-                let (dot_rect, _) = ui.allocate_exact_size(Vec2::new(24.0, 34.0), Sense::hover());
+
+                let (dot_rect, _) = ui.allocate_exact_size(Vec2::new(sep_w, 34.0), Sense::hover());
                 ui.painter().rect_filled(dot_rect, Rounding::ZERO, BG3);
                 ui.painter().text(dot_rect.center(), Align2::CENTER_CENTER, "|", FontId::new(14.0, FontFamily::Name("mono".into())), TEXT3);
+
                 let ext_edit = TextEdit::singleline(&mut self.ext_filter).font(FontId::new(13.0, FontFamily::Name("mono".into()))).hint_text(RichText::new("扩展名").color(TEXT3)).frame(false).margin(Margin::symmetric(4.0, 8.0)).text_color(TEXT);
-                let ext_w = 80.0;
                 let ext_response = ui.add_sized(Vec2::new(ext_w, 34.0), ext_edit);
                 let ext_pop_id = ui.id().with("ext_pop");
                 if ui.interact(ext_response.rect, ui.id().with("ext_hit"), Sense::click()).double_clicked() { ui.memory_mut(|m| m.open_popup(ext_pop_id)); }
                 egui::popup_below_widget(ui, ext_pop_id, &ext_response, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| { self.draw_history_popup_content(ui, ctx, false, ext_w); });
-                let search_btn = egui::Button::new(RichText::new("搜索").font(FontId::new(13.0, FontFamily::Name("cond".into()))).color(Color32::BLACK).strong()).fill(ACCENT).rounding(Rounding::ZERO);
-                let trigger_search = ui.add_sized(Vec2::new(80.0, 34.0), search_btn).clicked() ||
-                    (search_response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) ||
-                    (ext_response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-                ui.add_space(5.0);
+
+                // 将搜索按钮强制右对齐
+                let mut trigger_search = false;
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.add_space(5.0);
+                    let search_btn = egui::Button::new(RichText::new("搜索").font(FontId::new(13.0, FontFamily::Name("cond".into()))).color(Color32::BLACK).strong()).fill(ACCENT).rounding(Rounding::ZERO);
+                    if ui.add_sized(Vec2::new(search_btn_w, 34.0), search_btn).clicked() {
+                        trigger_search = true;
+                    }
+                });
+
+                if !trigger_search {
+                    trigger_search = (search_response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) ||
+                                     (ext_response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                }
+
                 if trigger_search {
                     if !self.query.is_empty() { self.config.query_history.retain(|h| h != &self.query); self.config.query_history.insert(0, self.query.clone()); if self.config.query_history.len() > 10 { self.config.query_history.truncate(10); } }
                     if !self.ext_filter.is_empty() { self.config.ext_history.retain(|h| h != &self.ext_filter); self.config.ext_history.insert(0, self.ext_filter.clone()); if self.config.ext_history.len() > 10 { self.config.ext_history.truncate(10); } }
@@ -1161,8 +1183,14 @@ fn stat_item(ui: &mut egui::Ui, label: &str, value: &str) {
 fn menu_item(ui: &mut egui::Ui, label: &str) -> bool {
     let button = egui::Button::new(RichText::new(label).font(FontId::new(11.0, FontFamily::Name("cond".into()))).color(TEXT2))
         .fill(Color32::TRANSPARENT)
+        .min_size(Vec2::new(ui.available_width(), 26.0))
         .rounding(Rounding::same(4.0));
-    ui.add(button).clicked()
+
+    let res = ui.add(button);
+    if res.hovered() {
+        ui.painter().rect_filled(res.rect, Rounding::same(4.0), BG3);
+    }
+    res.clicked()
 }
 
 fn open_file(path: &str) {
