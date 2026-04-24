@@ -921,12 +921,12 @@ impl FerrexApp {
     fn draw_search_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let frame = Frame::none().fill(BG2).stroke(Stroke::new(1.0, BORDER2)).rounding(Rounding::ZERO);
         frame.show(ui, |ui| {
-            ui.horizontal(|ui| {
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 5.0;
-                ui.add_space(5.0); // 与左边缘保持 5 像素
+                ui.add_space(5.0);
 
-                // 图标
-                ui.add(egui::Image::new(egui::include_image!("../icons/search.svg")).max_size(Vec2::splat(16.0)).tint(ACCENT));
+                // 搜索图标
+                ui.add(egui::Image::new(egui::include_image!("../icons/search.svg")).max_size(Vec2::splat(16.0)));
 
                 let search_edit = TextEdit::singleline(&mut self.query).font(FontId::new(13.0, FontFamily::Name("mono".into()))).hint_text(RichText::new("文件名 / 关键词...").color(TEXT3)).frame(false).margin(Margin::symmetric(4.0, 8.0)).text_color(TEXT);
 
@@ -1180,15 +1180,22 @@ fn stat_item(ui: &mut egui::Ui, label: &str, value: &str) {
 }
 
 fn menu_item(ui: &mut egui::Ui, label: &str) -> bool {
-    let is_hovered = ui.rect_contains_pointer(ui.available_rect_before_wrap());
-    let bg_color = if is_hovered { Color32::from_rgb(35, 45, 55) } else { Color32::TRANSPARENT };
-
-    let button = egui::Button::new(RichText::new(label).font(FontId::new(11.0, FontFamily::Name("cond".into()))).color(if is_hovered { Color32::WHITE } else { TEXT2 }))
-        .fill(bg_color)
+    let button = egui::Button::new(RichText::new(label).font(FontId::new(11.0, FontFamily::Name("cond".into()))).color(Color32::TRANSPARENT))
+        .fill(Color32::TRANSPARENT)
         .min_size(Vec2::new(ui.available_width(), 26.0))
         .rounding(Rounding::same(4.0));
 
-    ui.add(button).clicked()
+    let res = ui.add(button);
+    let is_hovered = res.hovered();
+
+    if is_hovered {
+        ui.painter().rect_filled(res.rect, Rounding::same(4.0), Color32::from_rgb(35, 45, 55));
+    }
+
+    let text_color = if is_hovered { Color32::WHITE } else { TEXT2 };
+    ui.painter().text(res.rect.left_center() + Vec2::new(8.0, 0.0), Align2::LEFT_CENTER, label, FontId::new(11.0, FontFamily::Name("cond".into())), text_color);
+
+    res.clicked()
 }
 
 fn open_file(path: &str) {
