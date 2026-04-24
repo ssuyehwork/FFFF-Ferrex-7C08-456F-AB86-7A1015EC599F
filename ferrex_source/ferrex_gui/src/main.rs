@@ -156,6 +156,25 @@ struct OverlayEntry {
     is_deleted: bool,
 }
 
+impl OverlayEntry {
+    fn matches(&self, opts: &SearchOptions) -> bool {
+        if self.name.is_empty() { return false; }
+        let is_dir = self.flags & 0x10 != 0;
+        if is_dir && !opts.include_dirs { return false; }
+        if let Some(ext) = opts.ext_filter {
+            if !self.name.to_lowercase().ends_with(&format!(".{}", ext.to_lowercase())) {
+                return false;
+            }
+        }
+        if !opts.query.is_empty() {
+            if !self.name.to_lowercase().contains(&opts.query.to_lowercase()) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
 struct VolumeStore {
     drive: String,
     index: Arc<LoadedIndex>,
@@ -229,6 +248,7 @@ struct FerrexApp {
     ext_filter: String,
     results: Vec<SearchResult>,
     selected_rows: HashSet<usize>,
+    last_clicked_row: Option<usize>,
     last_search_ms: f64,
     sort_col: SortColumn,
     sort_asc: bool,
@@ -236,7 +256,9 @@ struct FerrexApp {
     status_text: String,
     is_scanning: bool,
     scan_progress: f32,
-    scan_rx: Option<std::sync::mpsc::Receiver<ScanProgress>>,
+    scan_tx: std::sync::mpsc::Sender<ScanProgress>,
+    scan_rx: std::sync::mpsc::Receiver<ScanProgress>,
+    active_scan_count: usize,
     hardware_ok: bool,
     sysinfo: System,
     last_sys_poll: Instant,
@@ -265,6 +287,7 @@ impl FerrexApp {
         
         let _ = indexer::acquire_privileges();
         let config = AppConfig::load();
+        let (scan_tx, scan_rx) = std::sync::mpsc::channel();
 
         let mut app = Self {
             stores: Vec::new(),
@@ -274,6 +297,7 @@ impl FerrexApp {
             ext_filter: String::new(),
             results: Vec::new(),
             selected_rows: HashSet::new(),
+            last_clicked_row: None,
             last_search_ms: 0.0,
             sort_col: SortColumn::Name,
             sort_asc: true,
@@ -281,7 +305,9 @@ impl FerrexApp {
             status_text: "准备就绪".to_string(),
             is_scanning: false,
             scan_progress: 0.0,
-            scan_rx: None,
+            scan_tx,
+            scan_rx,
+            active_scan_count: 0,
             hardware_ok: false,
             sysinfo: System::new_all(),
             last_sys_poll: Instant::now(),
@@ -297,8 +323,6 @@ impl FerrexApp {
         app.hardware_ok = app.verify_hardware_wmi();
         if app.hardware_ok {
             app.load_volumes();
-            #[cfg(windows)]
-            app.setup_hotkey();
             #[cfg(windows)]
             app.setup_tray(cc.egui_ctx.clone());
         }
@@ -373,17 +397,12 @@ impl FerrexApp {
                     overlay: HashMap::new(),
                 });
             } else {
-                let (tx, rx) = std::sync::mpsc::channel();
-                self.scan_rx = Some(rx);
+                // 修复并发覆盖漏洞：使用统一的 scan_tx
                 self.is_scanning = true;
-                spawn_scan(vol, tx);
+                self.active_scan_count += 1;
+                spawn_scan(vol, self.scan_tx.clone());
             }
         }
-    }
-
-    #[cfg(windows)]
-    fn setup_hotkey(&self) {
-        unsafe { let _ = RegisterHotKey(HWND(0), 1001, MOD_ALT, 0x20); }
     }
 
     #[cfg(windows)]
@@ -413,6 +432,12 @@ impl FerrexApp {
             self.tray = tray;
             
             std::thread::spawn(move || {
+                // 修复：在独立后台线程中注册热键，确保窗口隐藏时依然有效
+                #[cfg(windows)]
+                unsafe {
+                    let _ = RegisterHotKey(HWND(0), 1001, MOD_ALT, 0x20);
+                }
+
                 let menu_rx = MenuEvent::receiver();
                 let tray_rx = TrayIconEvent::receiver();
                 loop {
@@ -442,6 +467,21 @@ impl FerrexApp {
                             _ => {}
                         }
                     }
+
+                    // 修复：在此轮询热键消息，解决 update 生命周期挂起导致热键失效的问题
+                    #[cfg(windows)]
+                    unsafe {
+                        use windows::Win32::UI::WindowsAndMessaging::{PeekMessageW, PM_REMOVE, MSG, WM_HOTKEY};
+                        let mut msg = MSG::default();
+                        while PeekMessageW(&mut msg, HWND(0), WM_HOTKEY, WM_HOTKEY, PM_REMOVE).as_bool() {
+                            if msg.wParam.0 == 1001 {
+                                ctx.send_viewport_cmd(ViewportCommand::Visible(true));
+                                ctx.send_viewport_cmd(ViewportCommand::Focus);
+                                ctx.request_repaint();
+                            }
+                        }
+                    }
+
                     std::thread::sleep(std::time::Duration::from_millis(16));
                 }
             });
@@ -461,7 +501,6 @@ impl FerrexApp {
                             if let Some(entry) = store.overlay.get_mut(&frn) {
                                 entry.is_deleted = true;
                             } else {
-                                // 针对静态索引中的项，标记删除
                                 store.overlay.insert(frn, OverlayEntry {
                                     name: String::new(), parent_frn: 0, flags: 0, is_deleted: true
                                 });
@@ -469,7 +508,6 @@ impl FerrexApp {
                             store.path_cache.pop(&frn);
                         }
                         UsnEvent::Renamed { old_frn, new_name, new_parent_frn } => {
-                            // 获取现有 flags
                             let flags = if let Some(entry) = store.overlay.get(&old_frn) {
                                 entry.flags
                             } else if let Some(&idx) = store.frn_map.get(&old_frn) {
@@ -482,7 +520,7 @@ impl FerrexApp {
                                 flags,
                                 is_deleted: false
                             });
-                            store.path_cache.clear(); // 重命名可能影响下游所有子路径，清理缓存
+                            store.path_cache.clear();
                         }
                         UsnEvent::Modified { frn } => {
                             store.path_cache.pop(&frn);
@@ -493,7 +531,7 @@ impl FerrexApp {
         }
     }
 
-    fn run_search(&mut self, ctx: &egui::Context) {
+    fn run_search(&mut self, _ctx: &egui::Context) {
         let t0 = Instant::now();
         let opts = SearchOptions {
             query: &self.query,
@@ -508,7 +546,6 @@ impl FerrexApp {
         for store in self.stores.iter_mut() {
             if !self.active_drives.contains(&store.drive) { continue; }
 
-            // 1. 静态索引搜索
             let searcher = Searcher::new(
                 &store.index.frns, &store.index.parent_frns, &store.index.sizes, 
                 &store.index.timestamps, &store.index.flags, &store.index.name_offsets, 
@@ -517,15 +554,10 @@ impl FerrexApp {
             let matches = searcher.search(&opts);
             for rec_idx in matches {
                 let frn = store.index.frns[rec_idx];
-
-                // 过滤掉已经在覆盖层中被删除或修改的记录
                 if store.overlay.contains_key(&frn) { continue; }
-
                 let name = pool_get_name(&store.index.string_pool, store.index.name_offsets[rec_idx] as usize);
                 let full_path = store.resolve_live_path(frn);
                 
-                self.icons.get_for_path(ctx, &name, store.index.flags[rec_idx] & 0x10 != 0);
-
                 all_results.push(SearchResult {
                     drive: store.drive.clone(),
                     name,
@@ -537,18 +569,14 @@ impl FerrexApp {
                 if all_results.len() >= 5000 { break; }
             }
 
-            // 2. 覆盖层（实时变更）搜索
             if all_results.len() < 5000 {
-                // 需要先收集必要信息以避免在迭代时借用冲突
                 let candidates: Vec<(u64, String, u32)> = store.overlay.iter()
-                    .filter(|(_, e)| !e.is_deleted && matches_overlay_entry(e, &opts))
+                    .filter(|(_, e)| !e.is_deleted && e.matches(&opts))
                     .map(|(&f, e)| (f, e.name.clone(), e.flags))
                     .collect();
 
                 for (frn, name, flags) in candidates {
                     let full_path = store.resolve_live_path(frn);
-                    self.icons.get_for_path(ctx, &name, flags & 0x10 != 0);
-
                     all_results.push(SearchResult {
                         drive: store.drive.clone(),
                         name,
@@ -568,11 +596,9 @@ impl FerrexApp {
         self.last_search_ms = t0.elapsed().as_secs_f64() * 1000.0;
     }
 
-
     fn apply_sort(&mut self) {
         let asc = self.sort_asc;
         match self.sort_col {
-            // 优化：避免在排序闭包中进行堆内存分配 (to_lowercase)，使用忽略大小写的 ASCII 对比
             SortColumn::Name => self.results.sort_by(|a, b| { let c = cmp_ignore_ascii_case(&a.name, &b.name); if asc { c } else { c.reverse() } }),
             SortColumn::Path => self.results.sort_by(|a, b| { let c = cmp_ignore_ascii_case(&a.full_path, &b.full_path); if asc { c } else { c.reverse() } }),
             SortColumn::Size => self.results.sort_by(|a, b| { let c = a.size.cmp(&b.size); if asc { c } else { c.reverse() } }),
@@ -591,7 +617,6 @@ impl FerrexApp {
                 let mut content = String::from("名称,路径,大小(字节),修改时间,类型\n");
                 for &idx in &self.selected_rows {
                     if let Some(r) = self.results.get(idx) {
-                        // 修复：增加 CSV 字段转义（双引号），防止路径中的逗号破坏表格格式
                         content.push_str(&format!("\"{}\",\"{}\",{},{},{}\n",
                             r.name, r.full_path, r.size,
                             format_timestamp(r.timestamp),
@@ -619,14 +644,11 @@ impl eframe::App for FerrexApp {
         }
 
         self.process_usn_events();
-        #[cfg(windows)]
-        self.handle_hotkey(ctx);
         self.update_stats();
-        self.handle_scan_progress();
+        self.handle_scan_progress(ctx);
 
         if ctx.input(|i| i.viewport().close_requested()) {
             if self.should_exit.load(Ordering::SeqCst) {
-                // 收到退出信号，不执行任何拦截，允许默认关闭行为
             } else {
                 ctx.send_viewport_cmd(ViewportCommand::CancelClose);
                 ctx.send_viewport_cmd(ViewportCommand::Visible(false));
@@ -647,7 +669,6 @@ impl eframe::App for FerrexApp {
             .exact_height(if self.is_scanning { 50.0 } else { 48.0 })
             .frame(Frame::none().fill(PANEL))
             .show(ctx, |ui| {
-                // 搜索区域边距规范：左侧 5.0，上下保持 8.0
                 Frame::none().inner_margin(Margin::symmetric(5.0, 8.0)).show(ui, |ui| {
                     self.draw_search_bar(ui, ctx);
                 });
@@ -666,7 +687,6 @@ impl eframe::App for FerrexApp {
         egui::CentralPanel::default().frame(Frame::none().fill(BG)).show(ctx, |ui| {
             ui.with_layout(Layout::top_down(Align::Min), |ui| {
                 self.draw_column_header(ui);
-                // 移除多余的 Separator，依靠 Header 底边或 Panel 分界
                 self.draw_results_list(ui);
             });
         });
@@ -697,11 +717,9 @@ impl FerrexApp {
             ui.label(RichText::new("FERREX").font(FontId::new(14.0, FontFamily::Name("cond".into()))).color(ACCENT).extra_letter_spacing(1.5));
             ui.add_space(12.0);
             
-            // 记录总数显示
             let total_records: usize = self.stores.iter().map(|s| s.record_count).sum();
             ui.label(RichText::new(format!("READY — {}", format_number(total_records))).font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(SUCCESS));
 
-            // 中间拖拽区域
             let drag_rect = ui.available_rect_before_wrap();
             let drag_response = ui.interact(drag_rect, ui.id().with("drag"), Sense::click_and_drag());
             if drag_response.drag_started_by(egui::PointerButton::Primary) {
@@ -710,24 +728,19 @@ impl FerrexApp {
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
-                
-                let icon_normal = Color32::from_rgb(238, 238, 238); // #EEEEEE
-
-                // 关闭按钮
+                let icon_normal = Color32::from_rgb(238, 238, 238);
                 let close_response = self.draw_svg_button(
                     ui, 
                     egui::include_image!("../icons/close.svg"), 
                     Color32::TRANSPARENT, 
-                    Color32::from_rgb(241, 112, 122), // #F1707A
-                    Color32::from_rgb(165, 0, 0),     // #A50000
+                    Color32::from_rgb(241, 112, 122),
+                    Color32::from_rgb(165, 0, 0),
                     icon_normal,
                     Color32::WHITE
                 );
                 if close_response.clicked() {
                     ui.ctx().send_viewport_cmd(ViewportCommand::Close);
                 }
-
-                // 最大化/还原
                 let is_max = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
                 let max_img = if is_max { egui::include_image!("../icons/restore.svg") } else { egui::include_image!("../icons/maximize.svg") };
                 let max_response = self.draw_svg_button(
@@ -742,8 +755,6 @@ impl FerrexApp {
                 if max_response.clicked() {
                     ui.ctx().send_viewport_cmd(ViewportCommand::Maximized(!is_max));
                 }
-
-                // 最小化
                 let min_response = self.draw_svg_button(
                     ui, 
                     egui::include_image!("../icons/minimize.svg"), 
@@ -756,8 +767,6 @@ impl FerrexApp {
                 if min_response.clicked() {
                     ui.ctx().send_viewport_cmd(ViewportCommand::Minimized(true));
                 }
-
-                // 置顶
                 let pin_bg = if self.is_pinned { Color32::from_rgba_unmultiplied(255, 255, 255, 25) } else { Color32::TRANSPARENT };
                 let pin_icon_normal = if self.is_pinned { Color32::from_rgb(255, 85, 28) } else { icon_normal };
                 let pin_icon_hover = if self.is_pinned { Color32::from_rgb(255, 85, 28) } else { icon_normal };
@@ -779,7 +788,6 @@ impl FerrexApp {
         });
     }
 
-    /// 核心渲染函数：100% 使用物理 SVG 文件加载（禁止模拟绘图）
     fn draw_svg_button(
         &self, 
         ui: &mut egui::Ui, 
@@ -790,56 +798,34 @@ impl FerrexApp {
         normal_tint: Color32,
         hover_tint: Color32,
     ) -> egui::Response {
-        // 规格：24x24px 容器 (参考版 setFixedSize(24, 24))
         let (rect, response) = ui.allocate_exact_size(Vec2::splat(24.0), Sense::click());
-        
         let fill = if response.is_pointer_button_down_on() { press_bg } 
                    else if response.hovered() { hover_bg } 
                    else { base_bg };
-
         if fill != Color32::TRANSPARENT {
             ui.painter().rect_filled(rect, Rounding::same(4.0), fill);
         }
-
         let tint = if response.hovered() || response.is_pointer_button_down_on() { hover_tint } else { normal_tint };
-
-        // 渲染真实的物理 SVG 图标
-        let img = egui::Image::new(img_source)
-            .max_size(Vec2::splat(14.0)) // 严格控制图标在按钮中心的比例
-            .tint(tint);
-            
+        let img = egui::Image::new(img_source).max_size(Vec2::splat(14.0)).tint(tint);
         let mut child_ui = ui.child_ui(rect, Layout::centered_and_justified(Direction::LeftToRight), None);
         child_ui.add(img);
-
         response
     }
 
     fn draw_drive_selector(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let mut toggle_drive = None;
         let mut ignore_drive = None;
-
         ui.horizontal_centered(|ui| {
             ui.label(RichText::new("DRIVES").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3));
             ui.add_space(8.0);
-
-            // 全选 / 全清 逻辑 (无下划线，悬停橙色)
             let draw_action_btn = |ui: &mut egui::Ui, text: &str| -> egui::Response {
                 let (rect, response) = ui.allocate_exact_size(Vec2::new(32.0, 20.0), Sense::click());
                 let color = if response.hovered() { ACCENT } else { TEXT3 };
-                ui.painter().text(
-                    rect.center(),
-                    Align2::CENTER_CENTER,
-                    text,
-                    FontId::new(10.0, FontFamily::Name("cond".into())),
-                    color,
-                );
+                ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, FontId::new(10.0, FontFamily::Name("cond".into())), color);
                 response
             };
-
             if draw_action_btn(ui, "全选").clicked() {
-                for store in &self.stores {
-                    self.active_drives.insert(store.drive.clone());
-                }
+                for store in &self.stores { self.active_drives.insert(store.drive.clone()); }
                 self.config.active_drives = self.active_drives.clone();
                 self.config.save();
                 self.run_search(ctx);
@@ -847,70 +833,45 @@ impl FerrexApp {
             ui.add_space(4.0);
             if draw_action_btn(ui, "全清").clicked() {
                 self.active_drives.clear();
-                for def in &self.config.default_drives {
-                    self.active_drives.insert(def.clone());
-                }
+                for def in &self.config.default_drives { self.active_drives.insert(def.clone()); }
                 self.config.active_drives = self.active_drives.clone();
                 self.config.save();
                 self.run_search(ctx);
             }
             ui.add_space(8.0);
-            for store in &self.stores {
-                let is_active = self.active_drives.contains(&store.drive);
-                let is_default = self.config.default_drives.contains(&store.drive);
-                let label = if is_default { format!("★ {}:  {}", store.drive, format_count(store.record_count)) } 
-                            else { format!("{}:  {}", store.drive, format_count(store.record_count)) };
-
-                let (bg, stroke_color, text_color) = if is_active { (Color32::from_rgba_unmultiplied(255, 140, 0, 30), ACCENT, ACCENT) } else { (BG3, BORDER2, TEXT2) };
-                
-                let btn = egui::Button::new(RichText::new(&label).font(FontId::new(12.0, FontFamily::Name("cond".into()))).color(text_color))
-                    .fill(bg)
-                    .stroke(Stroke::new(1.0, stroke_color))
-                    .rounding(Rounding::ZERO);
-                
-                let response = ui.add(btn);
-                if response.clicked() {
-                    toggle_drive = Some((store.drive.clone(), is_active));
-                }
-                
-                let drive = store.drive.clone();
-                response.context_menu(|ui| {
-                    ui.set_min_width(140.0);
-                    let is_default = self.config.default_drives.contains(&drive);
-                    if menu_item(ui, if is_default { "取消默认选项" } else { "设为默认选项" }) {
-                        if is_default {
-                            self.config.default_drives.remove(&drive);
-                        } else {
-                            self.config.default_drives.insert(drive.clone());
+            ScrollArea::horizontal().show(ui, |ui| {
+                for store in &self.stores {
+                    let is_active = self.active_drives.contains(&store.drive);
+                    let is_default = self.config.default_drives.contains(&store.drive);
+                    let label = if is_default { format!("★ {}:  {}", store.drive, format_count(store.record_count)) }
+                                else { format!("{}:  {}", store.drive, format_count(store.record_count)) };
+                    let (bg, stroke_color, text_color) = if is_active { (Color32::from_rgba_unmultiplied(255, 140, 0, 30), ACCENT, ACCENT) } else { (BG3, BORDER2, TEXT2) };
+                    let btn = egui::Button::new(RichText::new(&label).font(FontId::new(12.0, FontFamily::Name("cond".into()))).color(text_color)).fill(bg).stroke(Stroke::new(1.0, stroke_color)).rounding(Rounding::ZERO);
+                    let response = ui.add(btn);
+                    if response.clicked() { toggle_drive = Some((store.drive.clone(), is_active)); }
+                    let drive = store.drive.clone();
+                    response.context_menu(|ui| {
+                        ui.set_min_width(140.0);
+                        let is_default = self.config.default_drives.contains(&drive);
+                        if menu_item(ui, if is_default { "取消默认选项" } else { "设为默认选项" }) {
+                            if is_default { self.config.default_drives.remove(&drive); } else { self.config.default_drives.insert(drive.clone()); }
+                            self.config.save(); ui.close_menu();
                         }
-                        self.config.save();
-                        ui.close_menu();
-                    }
-                    if menu_item(ui, "忽略此驱动器") {
-                        ignore_drive = Some(drive);
-                        ui.close_menu();
-                    }
-                });
-                ui.add_space(4.0);
-            }
+                        if menu_item(ui, "忽略此驱动器") { ignore_drive = Some(drive); ui.close_menu(); }
+                    });
+                    ui.add_space(4.0);
+                }
+            });
 
-            // 绘制被忽略的驱动器（半透明显示）
             let mut restore_drive = None;
             for ignored in &self.config.ignored_drives {
                 let label = format!("{}: IGNORED", ignored);
-                let btn = egui::Button::new(RichText::new(&label).font(FontId::new(12.0, FontFamily::Name("cond".into()))).color(TEXT3))
-                    .fill(Color32::TRANSPARENT)
-                    .stroke(Stroke::new(1.0, TEXT3.gamma_multiply(0.2)))
-                    .rounding(Rounding::ZERO);
+                let btn = egui::Button::new(RichText::new(&label).font(FontId::new(12.0, FontFamily::Name("cond".into()))).color(TEXT3)).fill(Color32::TRANSPARENT).stroke(Stroke::new(1.0, TEXT3.gamma_multiply(0.2))).rounding(Rounding::ZERO);
                 let response = ui.add(btn);
-                
                 let drive = ignored.clone();
                 response.context_menu(|ui| {
                     ui.set_min_width(120.0);
-                    if menu_item(ui, "恢复驱动器") {
-                        restore_drive = Some(drive);
-                        ui.close_menu();
-                    }
+                    if menu_item(ui, "恢复驱动器") { restore_drive = Some(drive); ui.close_menu(); }
                 });
                 ui.add_space(4.0);
             }
@@ -944,72 +905,32 @@ impl FerrexApp {
         frame.show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 5.0;
-                
                 let (icon_rect, _) = ui.allocate_exact_size(Vec2::new(36.0, 34.0), Sense::hover());
                 let c = Pos2::new(icon_rect.center().x - 2.0, icon_rect.center().y - 2.0);
                 ui.painter().circle_stroke(c, 5.5, Stroke::new(1.0, TEXT3));
                 ui.painter().line_segment([Pos2::new(c.x + 4.0, c.y + 4.0), Pos2::new(c.x + 8.0, c.y + 8.0)], Stroke::new(1.0, TEXT3));
-                
-                let search_edit = TextEdit::singleline(&mut self.query)
-                    .font(FontId::new(13.0, FontFamily::Name("mono".into())))
-                    .hint_text(RichText::new("文件名 / 关键词...").color(TEXT3))
-                    .frame(false)
-                    .margin(Margin::symmetric(4.0, 8.0))
-                    .text_color(TEXT);
-
+                let search_edit = TextEdit::singleline(&mut self.query).font(FontId::new(13.0, FontFamily::Name("mono".into()))).hint_text(RichText::new("文件名 / 关键词...").color(TEXT3)).frame(false).margin(Margin::symmetric(4.0, 8.0)).text_color(TEXT);
                 let search_w = ui.available_width() - 80.0 - 24.0 - 100.0;
                 let search_response = ui.add_sized(Vec2::new(search_w, 34.0), search_edit);
                 let query_pop_id = ui.id().with("query_pop");
-                if ui.interact(search_response.rect, ui.id().with("search_hit"), Sense::click()).double_clicked() {
-                    ui.memory_mut(|m| m.open_popup(query_pop_id));
-                }
-                egui::popup_below_widget(ui, query_pop_id, &search_response, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
-                    self.draw_history_popup_content(ui, ctx, true, search_w);
-                });
-
+                if ui.interact(search_response.rect, ui.id().with("search_hit"), Sense::click()).double_clicked() { ui.memory_mut(|m| m.open_popup(query_pop_id)); }
+                egui::popup_below_widget(ui, query_pop_id, &search_response, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| { self.draw_history_popup_content(ui, ctx, true, search_w); });
                 let (dot_rect, _) = ui.allocate_exact_size(Vec2::new(24.0, 34.0), Sense::hover());
                 ui.painter().rect_filled(dot_rect, Rounding::ZERO, BG3);
                 ui.painter().text(dot_rect.center(), Align2::CENTER_CENTER, ".", FontId::new(16.0, FontFamily::Name("mono".into())), ACCENT);
-                
-                let ext_edit = TextEdit::singleline(&mut self.ext_filter)
-                    .font(FontId::new(13.0, FontFamily::Name("mono".into())))
-                    .hint_text(RichText::new("扩展名").color(TEXT3))
-                    .frame(false)
-                    .margin(Margin::symmetric(4.0, 8.0))
-                    .text_color(TEXT);
+                let ext_edit = TextEdit::singleline(&mut self.ext_filter).font(FontId::new(13.0, FontFamily::Name("mono".into()))).hint_text(RichText::new("扩展名").color(TEXT3)).frame(false).margin(Margin::symmetric(4.0, 8.0)).text_color(TEXT);
                 let ext_w = 80.0;
                 let ext_response = ui.add_sized(Vec2::new(ext_w, 34.0), ext_edit);
                 let ext_pop_id = ui.id().with("ext_pop");
-                if ui.interact(ext_response.rect, ui.id().with("ext_hit"), Sense::click()).double_clicked() {
-                    ui.memory_mut(|m| m.open_popup(ext_pop_id));
-                }
-                egui::popup_below_widget(ui, ext_pop_id, &ext_response, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
-                    self.draw_history_popup_content(ui, ctx, false, ext_w);
-                });
-                
-                let search_btn = egui::Button::new(RichText::new("搜索").font(FontId::new(13.0, FontFamily::Name("cond".into()))).color(Color32::BLACK).strong())
-                    .fill(ACCENT)
-                    .rounding(Rounding::ZERO);
-                
-                let trigger_search = ui.add_sized(Vec2::new(80.0, 34.0), search_btn).clicked() ||
-                                   (search_response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) ||
-                                   (ext_response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-
+                if ui.interact(ext_response.rect, ui.id().with("ext_hit"), Sense::click()).double_clicked() { ui.memory_mut(|m| m.open_popup(ext_pop_id)); }
+                egui::popup_below_widget(ui, ext_pop_id, &ext_response, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| { self.draw_history_popup_content(ui, ctx, false, ext_w); });
+                let search_btn = egui::Button::new(RichText::new("搜索").font(FontId::new(13.0, FontFamily::Name("cond".into()))).color(Color32::BLACK).strong()).fill(ACCENT).rounding(Rounding::ZERO);
+                let trigger_search = ui.add_sized(Vec2::new(80.0, 34.0), search_btn).clicked() || (search_response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) || (ext_response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
                 if trigger_search {
-                    if !self.query.is_empty() {
-                        self.config.query_history.retain(|h| h != &self.query);
-                        self.config.query_history.insert(0, self.query.clone());
-                        if self.config.query_history.len() > 10 { self.config.query_history.truncate(10); }
-                    }
-                    if !self.ext_filter.is_empty() {
-                        self.config.ext_history.retain(|h| h != &self.ext_filter);
-                        self.config.ext_history.insert(0, self.ext_filter.clone());
-                        if self.config.ext_history.len() > 10 { self.config.ext_history.truncate(10); }
-                    }
-                    self.config.save();
-                    self.run_search(ctx); 
+                    if !self.query.is_empty() { self.config.query_history.retain(|h| h != &self.query); self.config.query_history.insert(0, self.query.clone()); if self.config.query_history.len() > 10 { self.config.query_history.truncate(10); } }
+                    if !self.ext_filter.is_empty() { self.config.ext_history.retain(|h| h != &self.ext_filter); self.config.ext_history.insert(0, self.ext_filter.clone()); if self.config.ext_history.len() > 10 { self.config.ext_history.truncate(10); } }
+                    self.config.save(); self.run_search(ctx);
                 }
-
             });
         });
     }
@@ -1018,55 +939,28 @@ impl FerrexApp {
         let mut history_to_clear = false;
         let mut to_remove = None;
         let mut selected_item = None;
-
-        // 统一 Popup 视觉样式：与搜索框对齐，背景使用 PANEL，边框使用 BORDER2
-        Frame::none()
-            .fill(PANEL)
-            .stroke(Stroke::new(1.0, BORDER2))
-            .inner_margin(Margin::same(8.0))
-            .show(ui, |ui| {
-                ui.set_width(width);
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    ui.add(egui::Image::new(egui::include_image!("../icons/restore.svg")).max_size(Vec2::splat(12.0)).tint(TEXT3));
-                    ui.label(RichText::new("搜索历史").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3));
-
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let clear_resp = ui.link(RichText::new("清空").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3));
-                        if clear_resp.clicked() { history_to_clear = true; }
-                    });
-                });
-                ui.add_space(6.0);
-
-                let history = if is_query { &self.config.query_history } else { &self.config.ext_history };
-                for (idx, item) in history.iter().enumerate() {
-                    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
-
-                    if resp.hovered() {
-                        ui.painter().rect_filled(rect, Rounding::same(2.0), BG3);
-                    }
-
-                    let text_pos = Pos2::new(rect.left() + 8.0, rect.center().y);
-                    ui.painter().text(text_pos, Align2::LEFT_CENTER, item, FontId::new(12.0, FontFamily::Name("mono".into())), Color32::WHITE);
-
-                    let del_rect = egui::Rect::from_center_size(Pos2::new(rect.right() - 14.0, rect.center().y), Vec2::splat(18.0));
-                    let del_resp = ui.interact(del_rect, ui.id().with(idx), Sense::click());
-
-                    let del_color = if del_resp.hovered() { DANGER } else { TEXT3 };
-                    if del_resp.hovered() {
-                        ui.painter().rect_filled(del_rect, Rounding::same(2.0), Color32::from_rgba_unmultiplied(255, 255, 255, 10));
-                    }
-                    ui.painter().text(del_rect.center(), Align2::CENTER_CENTER, "×", FontId::new(14.0, FontFamily::Name("mono".into())), del_color);
-
-                    if del_resp.clicked() {
-                        to_remove = Some(idx);
-                    } else if resp.clicked() {
-                        selected_item = Some(item.clone());
-                        ui.memory_mut(|m| m.close_popup());
-                    }
-                }
+        Frame::none().fill(PANEL).stroke(Stroke::new(1.0, BORDER2)).inner_margin(Margin::same(8.0)).show(ui, |ui| {
+            ui.set_width(width);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                ui.add(egui::Image::new(egui::include_image!("../icons/restore.svg")).max_size(Vec2::splat(12.0)).tint(TEXT3));
+                ui.label(RichText::new("搜索历史").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| { if ui.link(RichText::new("清空").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3)).clicked() { history_to_clear = true; } });
             });
-
+            ui.add_space(6.0);
+            let history = if is_query { &self.config.query_history } else { &self.config.ext_history };
+            for (idx, item) in history.iter().enumerate() {
+                let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
+                if resp.hovered() { ui.painter().rect_filled(rect, Rounding::same(2.0), BG3); }
+                ui.painter().text(Pos2::new(rect.left() + 8.0, rect.center().y), Align2::LEFT_CENTER, item, FontId::new(12.0, FontFamily::Name("mono".into())), Color32::WHITE);
+                let del_rect = egui::Rect::from_center_size(Pos2::new(rect.right() - 14.0, rect.center().y), Vec2::splat(18.0));
+                let del_resp = ui.interact(del_rect, ui.id().with(idx), Sense::click());
+                let del_color = if del_resp.hovered() { DANGER } else { TEXT3 };
+                if del_resp.hovered() { ui.painter().rect_filled(del_rect, Rounding::same(2.0), Color32::from_rgba_unmultiplied(255, 255, 255, 10)); }
+                ui.painter().text(del_rect.center(), Align2::CENTER_CENTER, "×", FontId::new(14.0, FontFamily::Name("mono".into())), del_color);
+                if del_resp.clicked() { to_remove = Some(idx); } else if resp.clicked() { selected_item = Some(item.clone()); ui.memory_mut(|m| m.close_popup()); }
+            }
+        });
         let mut save_needed = false;
         {
             let history = if is_query { &mut self.config.query_history } else { &mut self.config.ext_history };
@@ -1074,11 +968,7 @@ impl FerrexApp {
             if let Some(i) = to_remove { history.remove(i); save_needed = true; }
         }
         if save_needed { self.config.save(); }
-
-        if let Some(item) = selected_item {
-            if is_query { self.query = item; } else { self.ext_filter = item; }
-            self.run_search(ctx);
-        }
+        if let Some(item) = selected_item { if is_query { self.query = item; } else { self.ext_filter = item; } self.run_search(ctx); }
     }
 
     fn draw_column_header(&mut self, ui: &mut egui::Ui) {
@@ -1088,15 +978,11 @@ impl FerrexApp {
         const SIZE_W:  f32 = 80.0;
         const DATE_W:  f32 = 130.0;
         const PADDING: f32 = 8.0 + 8.0 + 6.0 + 16.0;
-
         let total_w = ui.available_width();
         let path_w  = (total_w - ICON_W - TAG_W - NAME_W - SIZE_W - DATE_W - PADDING).max(40.0);
-
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
-            let skip = ICON_W + 8.0 + TAG_W + 6.0 + 8.0;
-            ui.add_space(skip);
-
+            ui.add_space(ICON_W + 8.0 + TAG_W + 6.0 + 8.0);
             if col_header_btn(ui, "名称", NAME_W, false) { self.sort_col = SortColumn::Name; self.sort_asc = !self.sort_asc; self.apply_sort(); }
             if col_header_btn(ui, "路径", path_w, false) { self.sort_col = SortColumn::Path; self.sort_asc = !self.sort_asc; self.apply_sort(); }
             if col_header_btn(ui, "大小", SIZE_W, true)  { self.sort_col = SortColumn::Size; self.sort_asc = !self.sort_asc; self.apply_sort(); }
@@ -1105,280 +991,145 @@ impl FerrexApp {
     }
 
     fn draw_results_list(&mut self, ui: &mut egui::Ui) {
-        if self.results.is_empty() {
-            self.draw_empty_state(ui);
-            return;
-        }
-
+        if self.results.is_empty() { self.draw_empty_state(ui); return; }
         let mut new_context_row: Option<usize> = None;
         let mut new_selected:    Option<usize> = None;
-
         let available_width  = ui.available_width();
         let results_total    = self.results.len();
-
-        // Fixed column widths — must add up to less than available_width
         const ICON_W:   f32 = 14.0;
         const TAG_W:    f32 = 22.0;
         const NAME_W:   f32 = 260.0;
         const SIZE_W:   f32 = 80.0;
         const DATE_W:   f32 = 130.0;
-        const PADDING:  f32 = 8.0 + 8.0 + 6.0 + 16.0; // left gap + icon-gap + tag-gap + right
-        // PATH gets whatever is left
+        const PADDING:  f32 = 8.0 + 8.0 + 6.0 + 16.0;
         let path_w = (available_width - ICON_W - TAG_W - NAME_W - SIZE_W - DATE_W - PADDING).max(40.0);
 
-        // 修复：使用 show_rows 实现虚拟化滚动，消除 200 条渲染截断并提升大数据量下的性能
-        ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show_rows(ui, 30.0, results_total, |ui, row_range| {
-                ui.spacing_mut().item_spacing.y = 0.0;
-
-                for idx in row_range {
-                    let result      = self.results[idx].clone();
-
-                    // Allocate the full-width row rect
-                    let (rect, response) = ui.allocate_exact_size(
-                        Vec2::new(available_width, 30.0),
-                        Sense::click(),
-                    );
-
-                    let is_hovered = response.hovered();
-
-                    // Row background
-                    let bg = if is_hovered {
-                        BG3
-                    } else if idx % 2 == 0 {
-                        BG
-                    } else {
-                        BG2
-                    };
-                    ui.painter().rect_filled(rect, Rounding::ZERO, bg);
-
-                    // Click / right-click
-                    if response.clicked()           { new_selected    = Some(idx); }
-                    if response.secondary_clicked() { new_context_row = Some(idx); }
-
-                    // ── Row content — manual x positioning, fixed y centre ──────
-                    let y_center = rect.center().y;
-                    let mut x    = rect.left() + 8.0;
-
-                    // 1. File icon (14×14)
-                    let icon_rect = egui::Rect::from_min_size(
-                        Pos2::new(x, y_center - 7.0),
-                        Vec2::new(ICON_W, ICON_W),
-                    );
-                    let icon_src = self.icons.get_for_path(ui.ctx(), &result.name, result.is_dir);
-                    // We cannot use painter for images; use a child_ui scoped to just this rect
-                    ui.child_ui(icon_rect, Layout::left_to_right(Align::Min), None).add(
-                        Image::new(icon_src)
-                            .fit_to_exact_size(Vec2::new(ICON_W, ICON_W)),
-                    );
-                    x += ICON_W + 8.0;
-
-                    let painter = ui.painter();
-
-                    // 2. Drive tag (22×14 border box)
-                    let tag_rect = egui::Rect::from_min_size(
-                        Pos2::new(x, y_center - 7.0),
-                        Vec2::new(TAG_W, 14.0),
-                    );
-                    painter.rect_stroke(tag_rect, 1.0, Stroke::new(1.0, BORDER2));
-                    painter.text(
-                        tag_rect.center(),
-                        Align2::CENTER_CENTER,
-                        &result.drive[..2],
-                        FontId::new(9.0, FontFamily::Name("cond".into())),
-                        Color32::WHITE,
-                    );
-                    x += TAG_W + 6.0;
-
-                // Helper: draw a clipped text string (supports left/right align)
-                    let draw_text = |painter: &egui::Painter,
-                                     text: &str,
-                                     col_x: f32,
-                                     col_w: f32,
-                                     font: FontId,
-                                 color: Color32,
-                                 right_align: bool| {
+        ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, 30.0, results_total, |ui, row_range| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            for idx in row_range {
+                let result = self.results[idx].clone();
+                let (rect, response) = ui.allocate_exact_size(Vec2::new(available_width, 30.0), Sense::click());
+                let is_hovered = response.hovered();
+                let is_selected = self.selected_rows.contains(&idx);
+                let bg = if is_hovered || is_selected { BG3 } else if idx % 2 == 0 { BG } else { BG2 };
+                ui.painter().rect_filled(rect, Rounding::ZERO, bg);
+                if response.double_clicked() { open_file(&result.full_path); }
+                else if response.clicked() { new_selected = Some(idx); }
+                if response.secondary_clicked() { new_context_row = Some(idx); }
+                let y_center = rect.center().y;
+                let mut x = rect.left() + 8.0;
+                let icon_rect = egui::Rect::from_min_size(Pos2::new(x, y_center - 7.0), Vec2::new(ICON_W, ICON_W));
+                let icon_src = self.icons.get_for_path(ui.ctx(), &result.full_path, result.is_dir);
+                ui.child_ui(icon_rect, Layout::left_to_right(Align::Min), None).add(Image::new(icon_src).fit_to_exact_size(Vec2::new(ICON_W, ICON_W)));
+                x += ICON_W + 8.0;
+                let tag_rect = egui::Rect::from_min_size(Pos2::new(x, y_center - 7.0), Vec2::new(TAG_W, 14.0));
+                ui.painter().rect_stroke(tag_rect, 1.0, Stroke::new(1.0, BORDER2));
+                ui.painter().text(tag_rect.center(), Align2::CENTER_CENTER, &result.drive[..2], FontId::new(9.0, FontFamily::Name("cond".into())), Color32::WHITE);
+                x += TAG_W + 6.0;
+                let draw_text = |painter: &egui::Painter, text: &str, col_x: f32, col_w: f32, font: FontId, color: Color32, right_align: bool| {
                     let text_pos = if right_align { Pos2::new(col_x + col_w, y_center) } else { Pos2::new(col_x, y_center) };
                     let align = if right_align { Align2::RIGHT_CENTER } else { Align2::LEFT_CENTER };
-                        let clip_rect = egui::Rect::from_min_size(
-                            Pos2::new(col_x, rect.top()),
-                            Vec2::new(col_w, rect.height()),
-                        );
+                    let clip_rect = egui::Rect::from_min_size(Pos2::new(col_x, rect.top()), Vec2::new(col_w, rect.height()));
                     painter.with_clip_rect(clip_rect).text(text_pos, align, text, font, color);
-                    };
+                };
+                draw_text(ui.painter(), &result.name, x, NAME_W, FontId::new(12.5, FontFamily::Name("mono".into())), Color32::WHITE, false);
+                x += NAME_W;
+                draw_text(ui.painter(), &result.full_path, x, path_w, FontId::new(11.0, FontFamily::Name("mono".into())), Color32::WHITE, false);
+                x += path_w;
+                let size_str = if result.is_dir { "—".to_string() } else { format_size(result.size) };
+                draw_text(ui.painter(), &size_str, x, SIZE_W, FontId::new(11.0, FontFamily::Name("mono".into())), Color32::WHITE, true);
+                x += SIZE_W;
+                draw_text(ui.painter(), &format_timestamp(result.timestamp), x, DATE_W, FontId::new(11.0, FontFamily::Name("mono".into())), Color32::WHITE, true);
+            }
+        });
 
-                    // 3. File name
-                    draw_text(
-                        painter,
-                        &result.name,
-                        x, NAME_W,
-                        FontId::new(12.5, FontFamily::Name("mono".into())),
-                        Color32::WHITE,
-                        false
-                    );
-                    x += NAME_W;
-
-                    // 4. Path
-                    draw_text(
-                        painter,
-                        &result.full_path,
-                        x, path_w,
-                        FontId::new(11.0, FontFamily::Name("mono".into())),
-                        Color32::WHITE,
-                        false
-                    );
-                    x += path_w;
-
-                    // 5. Size (right-aligned)
-                    let size_str = if result.is_dir { "—".to_string() } else { format_size(result.size) };
-                    draw_text(
-                        painter,
-                        &size_str,
-                        x, SIZE_W,
-                        FontId::new(11.0, FontFamily::Name("mono".into())),
-                        Color32::WHITE,
-                        true
-                    );
-                    x += SIZE_W;
-
-                    // 6. Date
-                    draw_text(
-                        painter,
-                        &format_timestamp(result.timestamp),
-                        x, DATE_W,
-                        FontId::new(11.0, FontFamily::Name("mono".into())),
-                        Color32::WHITE,
-                        true
-                    );
-                }
-            });
-
-        // ── Process deferred interactions ────────────────────────────────────
         if let Some(idx) = new_selected {
             let modifiers = ui.input(|i| i.modifiers);
             if modifiers.command {
                 if !self.selected_rows.insert(idx) { self.selected_rows.remove(&idx); }
+                self.last_clicked_row = Some(idx);
             } else if modifiers.shift {
-                self.selected_rows.insert(idx);
+                if let Some(start) = self.last_clicked_row {
+                    let (min, max) = if start < idx { (start, idx) } else { (idx, start) };
+                    for i in min..=max { self.selected_rows.insert(i); }
+                } else { self.selected_rows.insert(idx); }
             } else {
-                self.selected_rows.clear();
-                self.selected_rows.insert(idx);
+                self.selected_rows.clear(); self.selected_rows.insert(idx); self.last_clicked_row = Some(idx);
             }
         }
-
         if let Some(idx) = new_context_row { self.context_menu_row = Some(idx); }
         if let Some(row_idx) = self.context_menu_row {
             let result = self.results[row_idx].clone();
             let mut close_menu = false;
             let menu_pos = ui.input(|i| i.pointer.interact_pos().unwrap_or_default());
-            Area::new(Id::new("ctx_menu"))
-                .fixed_pos(menu_pos)
-                .order(Order::Foreground)
-                .show(ui.ctx(), |ui| {
-                    Frame::none()
-                        .fill(PANEL)
-                        .stroke(Stroke::new(1.0, BORDER2))
-                        .inner_margin(Margin::same(4.0))
-                        .show(ui, |ui| {
-                            ui.set_min_width(180.0);
-                            if menu_item(ui, "打开文件")             { open_file(&result.full_path); close_menu = true; }
-                            if menu_item(ui, "在资源管理器中定位")    { reveal_in_explorer(&result.full_path); close_menu = true; }
-                            if menu_item(ui, "复制路径")              { ui.ctx().output_mut(|o| o.copied_text = result.full_path.clone()); close_menu = true; }
-                            if menu_item(ui, "复制文件名")            { ui.ctx().output_mut(|o| o.copied_text = result.name.clone()); close_menu = true; }
-                            ui.separator();
-                            if menu_item(ui, "属性")                  { open_properties(&result.full_path); close_menu = true; }
-                        });
+            Area::new(Id::new("ctx_menu")).fixed_pos(menu_pos).order(Order::Foreground).show(ui.ctx(), |ui| {
+                Frame::none().fill(PANEL).stroke(Stroke::new(1.0, BORDER2)).inner_margin(Margin::same(4.0)).show(ui, |ui| {
+                    ui.set_min_width(180.0);
+                    if menu_item(ui, "打开文件") { open_file(&result.full_path); close_menu = true; }
+                    if menu_item(ui, "在资源管理器中定位") { reveal_in_explorer(&result.full_path); close_menu = true; }
+                    if menu_item(ui, "复制路径") { ui.ctx().output_mut(|o| o.copied_text = result.full_path.clone()); close_menu = true; }
+                    if menu_item(ui, "复制文件名") { ui.ctx().output_mut(|o| o.copied_text = result.name.clone()); close_menu = true; }
+                    ui.separator();
+                    if menu_item(ui, "属性") { open_properties(&result.full_path); close_menu = true; }
                 });
-            if close_menu
-                || (ui.input(|i| i.pointer.any_click())
-                    && !ui.input(|i| i.pointer.secondary_down()))
-            {
-                self.context_menu_row = None;
-            }
+            });
+            if close_menu || (ui.input(|i| i.pointer.any_click()) && !ui.input(|i| i.pointer.secondary_down())) { self.context_menu_row = None; }
         }
     }
 
     fn draw_empty_state(&self, ui: &mut egui::Ui) {
-        ui.vertical_centered(|ui| {
-            ui.add_space(100.0);
-            ui.label(RichText::new("无匹配结果").font(FontId::new(14.0, FontFamily::Name("cond".into()))).color(TEXT3));
-        });
+        ui.vertical_centered(|ui| { ui.add_space(100.0); ui.label(RichText::new("无匹配结果").font(FontId::new(14.0, FontFamily::Name("cond".into()))).color(TEXT3)); });
     }
 
     fn draw_status_bar(&self, ui: &mut egui::Ui) {
         ui.horizontal_centered(|ui| {
             if self.selected_rows.len() > 1 {
                 let total_size: u64 = self.selected_rows.iter().filter_map(|&idx| self.results.get(idx)).map(|r| r.size).sum();
-                stat_item(ui, "已选", &format!("{} 项", self.selected_rows.len()));
-                ui.add_space(8.0);
-                stat_item(ui, "合计大小", &format_size(total_size));
-                ui.add_space(16.0);
-                if ui.link(RichText::new("导出所选为 CSV").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(ACCENT)).clicked() {
-                    self.export_selected_csv();
-                }
+                stat_item(ui, "已选", &format!("{} 项", self.selected_rows.len())); ui.add_space(8.0);
+                stat_item(ui, "合计大小", &format_size(total_size)); ui.add_space(16.0);
+                if ui.link(RichText::new("导出所选为 CSV").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(ACCENT)).clicked() { self.export_selected_csv(); }
             } else {
-                stat_item(ui, "结果", &format_number(self.results.len()));
-                ui.add_space(16.0);
+                stat_item(ui, "结果", &format_number(self.results.len())); ui.add_space(16.0);
                 stat_item(ui, "耗时", &format!("{:.1} ms", self.last_search_ms));
             }
-
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.label(RichText::new("FERREX v0.1.0").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(ACCENT));
-                ui.add_space(16.0);
-                stat_item(ui, "CPU", &format!("{:.1}%", self.cpu_usage));
-                ui.add_space(16.0);
+                ui.label(RichText::new("FERREX v0.1.0").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(ACCENT)); ui.add_space(16.0);
+                stat_item(ui, "CPU", &format!("{:.1}%", self.cpu_usage)); ui.add_space(16.0);
                 stat_item(ui, "MEM", &format!("{:.0}MB", self.mem_usage_mb));
             });
         });
     }
 
-    #[cfg(windows)]
-    fn handle_hotkey(&self, ctx: &egui::Context) {
-        unsafe {
-            let mut msg = MSG::default();
-            while PeekMessageW(&mut msg, HWND(0), WM_HOTKEY, WM_HOTKEY, PM_REMOVE).as_bool() {
-                if msg.wParam.0 == 1001 {
-                    ctx.send_viewport_cmd(ViewportCommand::Focus);
-                    ctx.send_viewport_cmd(ViewportCommand::Visible(true));
-                }
-            }
-        }
-    }
-
     fn update_stats(&mut self) {
         if self.last_sys_poll.elapsed() >= Duration::from_secs(2) {
-            self.sysinfo.refresh_memory();
-            self.sysinfo.refresh_cpu_usage();
+            self.sysinfo.refresh_memory(); self.sysinfo.refresh_cpu_usage();
             self.mem_usage_mb = self.sysinfo.used_memory() as f32 / 1024.0 / 1024.0;
             self.cpu_usage = self.sysinfo.global_cpu_info().cpu_usage();
             self.last_sys_poll = Instant::now();
         }
     }
 
-
-    fn handle_scan_progress(&mut self) {
-        let mut drop_rx = false;
-        if let Some(ref rx) = self.scan_rx {
-            while let Ok(msg) = rx.try_recv() {
-                match msg {
-                    ScanProgress::Progress { done, total } => { 
-                        self.scan_progress = if total == 0 { 0.0 } else { done as f32 / total as f32 }; 
-                        self.status_text = format!("正在扫描 {}/{}", done, total); 
-                    }
-                    ScanProgress::Done => { 
-                        self.is_scanning = false; 
-                        drop_rx = true;
-                        self.status_text = "扫描完成".to_string(); 
-                    }
-                    ScanProgress::Error(e) => { 
-                        self.status_text = format!("错误: {}", e); 
-                        self.is_scanning = false; 
-                    }
+    fn handle_scan_progress(&mut self, ctx: &egui::Context) {
+        let mut reload_needed = false;
+        while let Ok(msg) = self.scan_rx.try_recv() {
+            match msg {
+                ScanProgress::Progress { done, total } => {
+                    self.scan_progress = if total == 0 { 0.0 } else { done as f32 / total as f32 };
+                    self.status_text = format!("正在扫描 {}/{}", done, total);
+                }
+                ScanProgress::Done => {
+                    if self.active_scan_count > 0 { self.active_scan_count -= 1; }
+                    if self.active_scan_count == 0 { self.is_scanning = false; self.status_text = "扫描完成".to_string(); }
+                    reload_needed = true;
+                }
+                ScanProgress::Error(e) => {
+                    self.status_text = format!("错误: {}", e);
+                    if self.active_scan_count > 0 { self.active_scan_count -= 1; }
+                    if self.active_scan_count == 0 { self.is_scanning = false; }
                 }
             }
         }
-        if drop_rx { self.scan_rx = None; }
+        if reload_needed { self.load_volumes(); self.run_search(ctx); }
     }
 }
 
@@ -1386,23 +1137,15 @@ fn col_header_btn(ui: &mut egui::Ui, text: &str, width: f32, right_align: bool) 
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 22.0), Sense::click());
     let pos = if right_align { Pos2::new(rect.right(), rect.center().y) } else { Pos2::new(rect.left(), rect.center().y) };
     let align = if right_align { Align2::RIGHT_CENTER } else { Align2::LEFT_CENTER };
-    ui.painter().text(
-        pos,
-        align,
-        text,
-        FontId::new(10.0, FontFamily::Name("cond".into())),
-        Color32::WHITE,
-    );
+    ui.painter().text(pos, align, text, FontId::new(10.0, FontFamily::Name("cond".into())), Color32::WHITE);
     response.clicked()
 }
-
 
 fn stat_item(ui: &mut egui::Ui, label: &str, value: &str) { 
     ui.label(RichText::new(label).font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3)); 
     ui.add_space(4.0); 
     ui.label(RichText::new(value).font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT2).strong()); 
 }
-
 
 fn menu_item(ui: &mut egui::Ui, label: &str) -> bool {
     ui.add(egui::Button::new(RichText::new(label).font(FontId::new(11.0, FontFamily::Name("cond".into()))).color(TEXT2)).fill(Color32::TRANSPARENT)).clicked()
@@ -1412,10 +1155,7 @@ fn open_file(path: &str) {
     let mut cmd = std::process::Command::new("cmd");
     cmd.args(["/c", "start", "", path]);
     #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    }
+    { use std::os::windows::process::CommandExt; cmd.creation_flags(0x08000000); }
     let _ = cmd.spawn();
 }
 
@@ -1423,10 +1163,7 @@ fn reveal_in_explorer(path: &str) {
     let mut cmd = std::process::Command::new("explorer");
     cmd.args(["/select,", path]);
     #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    }
+    { use std::os::windows::process::CommandExt; cmd.creation_flags(0x08000000); }
     let _ = cmd.spawn();
 }
 
@@ -1456,25 +1193,17 @@ fn load_icon() -> Option<tray_icon::Icon> {
     tray_icon::Icon::from_rgba(rgba, width, height).ok()
 }
 
-
 fn setup_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
-    #[allow(unused_mut)]
-    let mut msyh_loaded = false;
-
+    let mut _msyh_loaded = false;
     #[cfg(windows)]
     if let Ok(font_bytes) = std::fs::read("C:\\Windows\\Fonts\\msyh.ttc") {
         fonts.font_data.insert("msyh".to_owned(), egui::FontData::from_owned(font_bytes));
-        msyh_loaded = true;
+        _msyh_loaded = true;
     }
-
-    if msyh_loaded {
-        if let Some(v) = fonts.families.get_mut(&FontFamily::Proportional) {
-            v.insert(0, "msyh".to_owned());
-        }
-        if let Some(v) = fonts.families.get_mut(&FontFamily::Monospace) {
-            v.insert(0, "msyh".to_owned());
-        }
+    if _msyh_loaded {
+        if let Some(v) = fonts.families.get_mut(&FontFamily::Proportional) { v.insert(0, "msyh".to_owned()); }
+        if let Some(v) = fonts.families.get_mut(&FontFamily::Monospace) { v.insert(0, "msyh".to_owned()); }
         fonts.families.insert(FontFamily::Name("cond".into()), vec!["msyh".to_owned()]);
         fonts.families.insert(FontFamily::Name("mono".into()), vec!["msyh".to_owned()]);
     } else {
@@ -1487,8 +1216,7 @@ fn setup_fonts(ctx: &egui::Context) {
 }
 
 fn format_number(n: usize) -> String { 
-    let s = n.to_string(); 
-    let mut result = String::new(); 
+    let s = n.to_string(); let mut result = String::new();
     for (i, c) in s.chars().rev().enumerate() { if i > 0 && i % 3 == 0 { result.push(','); } result.push(c); } 
     result.chars().rev().collect() 
 }
@@ -1500,11 +1228,9 @@ fn format_count(n: usize) -> String {
 }
 
 fn format_size(bytes: u64) -> String { 
-    // 修复：0 字节明确显示为 "0 B"，以区分于目录（显示为 "—"）
     if bytes == 0 { return "0 B".to_string(); }
     const UNITS: &[&str] = &["B", "KB", "MB", "GB"]; 
-    let mut size = bytes as f64; 
-    let mut unit = 0; 
+    let mut size = bytes as f64; let mut unit = 0;
     while size >= 1024.0 && unit < UNITS.len() - 1 { size /= 1024.0; unit += 1; } 
     format!("{:.2} {}", size, UNITS[unit]) 
 }
@@ -1512,40 +1238,14 @@ fn format_size(bytes: u64) -> String {
 fn format_timestamp(ts: u64) -> String { 
     if ts == 0 { return "—".to_string(); } 
     let secs = (ts / 10_000_000) as i64 - 11644473600; 
-    // 修复：改用 Local 时区显示，解决中国用户（+8区）显示时间偏早 8 小时的问题
     use chrono::{TimeZone, Local};
-    if let Some(dt) = Local.timestamp_opt(secs, 0).single() {
-        return dt.format("%Y-%m-%d %H:%M").to_string();
-    }
+    if let Some(dt) = Local.timestamp_opt(secs, 0).single() { return dt.format("%Y-%m-%d %H:%M").to_string(); }
     "—".to_string() 
 }
 
-/// 辅助函数：实现无堆分配的 ASCII 大小写不敏感对比
 fn cmp_ignore_ascii_case(a: &str, b: &str) -> std::cmp::Ordering {
-    a.as_bytes().iter().map(|b| b.to_ascii_lowercase())
-     .cmp(b.as_bytes().iter().map(|b| b.to_ascii_lowercase()))
+    a.as_bytes().iter().map(|b| b.to_ascii_lowercase()).cmp(b.as_bytes().iter().map(|b| b.to_ascii_lowercase()))
 }
-
-fn matches_overlay_entry(entry: &OverlayEntry, opts: &SearchOptions) -> bool {
-    if entry.name.is_empty() { return false; }
-
-    let is_dir = entry.flags & 0x10 != 0;
-    if is_dir && !opts.include_dirs { return false; }
-
-    if let Some(ext) = opts.ext_filter {
-        if !entry.name.to_lowercase().ends_with(&format!(".{}", ext.to_lowercase())) {
-            return false;
-        }
-    }
-
-    if !opts.query.is_empty() {
-        if !entry.name.to_lowercase().contains(&opts.query.to_lowercase()) {
-            return false;
-        }
-    }
-    true
-}
-
 
 fn spawn_scan(vol: String, tx: std::sync::mpsc::Sender<ScanProgress>) {
     std::thread::spawn(move || {
@@ -1558,18 +1258,12 @@ fn spawn_scan(vol: String, tx: std::sync::mpsc::Sender<ScanProgress>) {
                 let mut store = IndexStore::new();
                 let total = entries.len();
                 for (i, entry) in entries.into_iter().enumerate() {
-                    if i % 10000 == 0 {
-                        let _ = tx.send(ScanProgress::Progress { done: i, total });
-                    }
+                    if i % 10000 == 0 { let _ = tx.send(ScanProgress::Progress { done: i, total }); }
                     let offset = store.string_pool.len() as u32;
-                    store.string_pool.extend_from_slice(entry.name.as_bytes()); 
-                    store.string_pool.push(0);
-                    store.frns.push(entry.frn); 
-                    store.parent_frns.push(entry.parent_frn); 
-                    store.sizes.push(entry.file_size); 
-                    store.timestamps.push(entry.modified); 
-                    store.name_offsets.push(offset); 
-                    store.flags.push(entry.flags);
+                    store.string_pool.extend_from_slice(entry.name.as_bytes()); store.string_pool.push(0);
+                    store.frns.push(entry.frn); store.parent_frns.push(entry.parent_frn);
+                    store.sizes.push(entry.file_size); store.timestamps.push(entry.modified);
+                    store.name_offsets.push(offset); store.flags.push(entry.flags);
                 }
                 let drive_letter = vol.chars().next().unwrap_or('c').to_lowercase().to_string();
                 let idx_path = format!("{}_drive.idx", drive_letter);
@@ -1587,27 +1281,13 @@ fn main() -> eframe::Result<()> {
         Ok(img) => {
             let rgba = img.into_rgba8();
             let (width, height) = rgba.dimensions();
-            Some(egui::IconData {
-                rgba: rgba.into_raw(),
-                width,
-                height,
-            })
+            Some(egui::IconData { rgba: rgba.into_raw(), width, height })
         }
         Err(_) => None,
     };
-
     let native_options = eframe::NativeOptions { 
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1000.0, 700.0])
-            .with_min_inner_size([800.0, 500.0])
-            .with_title("FERREX")
-            .with_icon(icon.unwrap_or_default())
-            .with_decorations(false), 
+        viewport: egui::ViewportBuilder::default().with_inner_size([1000.0, 700.0]).with_min_inner_size([800.0, 500.0]).with_title("FERREX").with_icon(icon.unwrap_or_default()).with_decorations(false),
         ..Default::default() 
     };
-    eframe::run_native(
-        "ferrex",
-        native_options,
-        Box::new(|cc| Ok(Box::new(FerrexApp::new(cc)) as Box<dyn eframe::App>)),
-    )
+    eframe::run_native("ferrex", native_options, Box::new(|cc| Ok(Box::new(FerrexApp::new(cc)) as Box<dyn eframe::App>)))
 }
