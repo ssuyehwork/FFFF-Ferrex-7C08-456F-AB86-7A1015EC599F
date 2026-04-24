@@ -526,7 +526,8 @@ impl eframe::App for FerrexApp {
             .exact_height(if self.is_scanning { 50.0 } else { 48.0 })
             .frame(Frame::none().fill(PANEL))
             .show(ctx, |ui| {
-                Frame::none().inner_margin(Margin::symmetric(16.0, 8.0)).show(ui, |ui| {
+                // 搜索区域边距规范：左侧 5.0，上下保持 8.0
+                Frame::none().inner_margin(Margin::symmetric(5.0, 8.0)).show(ui, |ui| {
                     self.draw_search_bar(ui, ctx);
                 });
                 if self.is_scanning { 
@@ -636,12 +637,13 @@ impl FerrexApp {
                 }
 
                 // 置顶
+                let pin_bg = if self.is_pinned { Color32::from_rgba_unmultiplied(255, 255, 255, 25) } else { Color32::TRANSPARENT };
                 let pin_icon_normal = if self.is_pinned { Color32::from_rgb(255, 85, 28) } else { icon_normal };
                 let pin_icon_hover = if self.is_pinned { Color32::from_rgb(255, 85, 28) } else { icon_normal };
                 let pin_response = self.draw_svg_button(
                     ui, 
                     egui::include_image!("../icons/pin.svg"), 
-                    Color32::TRANSPARENT, 
+                    pin_bg,
                     Color32::from_rgba_unmultiplied(255, 255, 255, 25), 
                     Color32::from_rgba_unmultiplied(255, 255, 255, 51), 
                     pin_icon_normal,
@@ -807,7 +809,8 @@ impl FerrexApp {
         let frame = Frame::none().fill(BG2).stroke(Stroke::new(1.0, BORDER2)).rounding(Rounding::ZERO);
         frame.show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
+                // 内部组件间距规范：5.0 像素
+                ui.spacing_mut().item_spacing.x = 5.0;
                 
                 // 搜索图标
                 let (icon_rect, _) = ui.allocate_exact_size(Vec2::new(36.0, 34.0), Sense::hover());
@@ -905,14 +908,14 @@ impl FerrexApp {
                     child_ui.painter().text(tag_rect.center(), Align2::CENTER_CENTER, &result.drive[..2], FontId::new(9.0, FontFamily::Name("cond".into())), TEXT3);
                     child_ui.add_space(6.0);
                     
-                    child_ui.add_sized([260.0, 20.0], Label::new(RichText::new(&result.name).font(FontId::new(12.5, FontFamily::Name("mono".into()))).color(TEXT)).truncate());
+                    child_ui.add_sized([260.0, 20.0], Label::new(RichText::new(&result.name).font(FontId::new(12.5, FontFamily::Name("mono".into()))).color(Color32::WHITE)).truncate());
                     
                     let remaining_w = child_ui.available_width();
                     let path_w = remaining_w - 80.0 - 130.0 - 32.0;
-                    child_ui.add_sized([path_w, 20.0], Label::new(RichText::new(&result.full_path).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(TEXT3)).truncate());
+                    child_ui.add_sized([path_w, 20.0], Label::new(RichText::new(&result.full_path).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(Color32::WHITE)).truncate());
                     
-                    child_ui.add_sized([80.0, 20.0], Label::new(RichText::new(format_size(result.size)).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(TEXT2)));
-                    child_ui.add_sized([130.0, 20.0], Label::new(RichText::new(format_timestamp(result.timestamp)).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(TEXT3)));
+                    child_ui.add_sized([80.0, 20.0], Label::new(RichText::new(format_size(result.size)).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(Color32::WHITE)));
+                    child_ui.add_sized([130.0, 20.0], Label::new(RichText::new(format_timestamp(result.timestamp)).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(Color32::WHITE)));
                 }
             });
         });
@@ -1036,7 +1039,7 @@ fn header_label(ui: &mut egui::Ui, text: &str, width: f32) -> bool {
     let (rect, response) = ui.allocate_at_least(Vec2::new(width, 20.0), Sense::click());
     if ui.is_rect_visible(rect) {
         let mut child_ui = ui.child_ui(rect, Layout::left_to_right(Align::Center), None);
-        let color = if response.hovered() { ACCENT } else { TEXT3 };
+        let color = if response.hovered() { ACCENT } else { Color32::WHITE };
         child_ui.add(Label::new(RichText::new(text).font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(color).extra_letter_spacing(1.5)));
     }
     response.clicked()
