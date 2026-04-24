@@ -215,7 +215,8 @@ impl VolumeStore {
         }
 
         parts.reverse();
-        let path = format!("{}:\\{}", self.drive, parts.join("\\"));
+        // 修复：由于 self.drive (如 "G:") 已经自带冒号，此处应直接拼接反斜杠，避免出现 "G::\" 这种非法路径
+        let path = format!("{}\\{}", self.drive, parts.join("\\"));
         self.path_cache.put(frn, path.clone());
         path
     }
@@ -1144,7 +1145,8 @@ fn open_file(path: &str) {
 
 fn reveal_in_explorer(path: &str) {
     let mut cmd = std::process::Command::new("explorer");
-    cmd.args(["/select,", path]);
+    // 修复：Windows explorer 的参数传递规范，确保 /select, 后紧跟路径
+    cmd.arg(format!("/select,{}", path));
     #[cfg(windows)]
     { use std::os::windows::process::CommandExt; cmd.creation_flags(0x08000000); }
     let _ = cmd.spawn();
