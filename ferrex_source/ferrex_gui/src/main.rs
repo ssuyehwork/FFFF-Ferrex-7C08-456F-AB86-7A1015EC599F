@@ -288,10 +288,10 @@ impl FerrexApp {
 
     #[cfg(windows)]
     fn setup_tray(&mut self) {
-        use tray_icon::menu::{Menu, MenuItem};
+        use tray_icon::menu::{Menu, MenuItem, MenuId};
         let tray_menu = Menu::new();
-        let show_i = MenuItem::new("打开主界面", true, None);
-        let quit_i = MenuItem::new("退出 FerREX", true, None);
+        let show_i = MenuItem::with_id(MenuId::new("show_main"), "打开主界面", true, None);
+        let quit_i = MenuItem::with_id(MenuId::new("quit"), "退出 FerREX", true, None);
         let _ = tray_menu.append_items(&[&show_i, &quit_i]);
 
         if let Some(icon) = load_icon() {
@@ -626,7 +626,7 @@ impl FerrexApp {
             }
             ui.add_space(4.0);
             if ui.link(RichText::new("全清").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3)).clicked() {
-                if self.active_drives.len() > 1 {
+                if !self.stores.is_empty() && self.active_drives.len() > 1 {
                     let first = self.stores[0].drive.clone();
                     self.active_drives.clear();
                     self.active_drives.insert(first);
@@ -908,18 +908,20 @@ impl FerrexApp {
         {
             use tray_icon::menu::MenuEvent;
             while let Ok(event) = MenuEvent::receiver().try_recv() {
-                // 根据 MenuItem 的创建顺序，ID 默认为 "1", "2" 等字符串
-                if event.id.0 == "1" {
+                if event.id.0 == "show_main" {
                     _ctx.send_viewport_cmd(ViewportCommand::Visible(true));
                     _ctx.send_viewport_cmd(ViewportCommand::Focus);
-                } else if event.id.0 == "2" {
+                } else if event.id.0 == "quit" {
                     _ctx.send_viewport_cmd(ViewportCommand::Close);
                 }
             }
             while let Ok(event) = tray_icon::TrayIconEvent::receiver().try_recv() {
-                if event.click_type == tray_icon::ClickType::Left {
-                    _ctx.send_viewport_cmd(ViewportCommand::Visible(true));
-                    _ctx.send_viewport_cmd(ViewportCommand::Focus);
+                match event {
+                    tray_icon::TrayIconEvent::Click { .. } => {
+                        _ctx.send_viewport_cmd(ViewportCommand::Visible(true));
+                        _ctx.send_viewport_cmd(ViewportCommand::Focus);
+                    }
+                    _ => {}
                 }
             }
         }
