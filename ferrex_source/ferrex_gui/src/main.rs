@@ -871,13 +871,15 @@ impl FerrexApp {
 
 fn header_button(ui: &mut egui::Ui, text: &str, width: f32, active: bool) -> bool {
     let color = if active { ACCENT } else { TEXT3 };
-    let btn = egui::Button::new(RichText::new(text).font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(color).extra_letter_spacing(1.5))
-        .fill(Color32::TRANSPARENT);
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 20.0), Sense::click());
 
-    let (rect, response) = ui.allocate_at_least(Vec2::new(width, 20.0), Sense::click());
     if ui.is_rect_visible(rect) {
+        if response.hovered() {
+            ui.painter().rect_filled(rect, Rounding::ZERO, Color32::from_white_alpha(10));
+        }
         let mut child_ui = ui.child_ui(rect, Layout::left_to_right(Align::Center), None);
-        child_ui.add(btn);
+        child_ui.add_space(2.0);
+        child_ui.add(Label::new(RichText::new(text).font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(color).extra_letter_spacing(1.5)).truncate());
     }
     response.clicked()
 }
@@ -934,7 +936,8 @@ fn open_properties(path: &str) {
 
 #[cfg(windows)]
 fn load_icon() -> Option<tray_icon::Icon> {
-    let image = image::open("ferrex.png").ok()?.into_rgba8();
+    let bytes = include_bytes!("../../ferrex.png");
+    let image = image::load_from_memory(bytes).ok()?.into_rgba8();
     let (width, height) = image.dimensions();
     let rgba = image.into_raw();
     tray_icon::Icon::from_rgba(rgba, width, height).ok()
