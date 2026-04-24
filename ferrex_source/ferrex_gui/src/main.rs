@@ -544,7 +544,7 @@ impl eframe::App for FerrexApp {
         egui::CentralPanel::default().frame(Frame::none().fill(BG)).show(ctx, |ui| {
             ui.with_layout(Layout::top_down(Align::Min), |ui| {
                 self.draw_column_header(ui);
-                ui.add(egui::Separator::default().spacing(0.0));
+                // 移除多余的 Separator，依靠 Header 底边或 Panel 分界
                 self.draw_results_list(ui);
             });
         });
@@ -568,13 +568,6 @@ impl FerrexApp {
     }
 
     fn draw_titlebar(&mut self, ui: &mut egui::Ui) {
-        let rect = ui.available_rect_before_wrap();
-        // 统一使用底部分割线，颜色参考版 #333
-        ui.painter().line_segment(
-            [rect.left_bottom(), rect.right_bottom()], 
-            Stroke::new(1.0, Color32::from_rgb(51, 51, 51))
-        );
-
         ui.horizontal_centered(|ui| {
             ui.add_space(8.0);
             ui.add(egui::Image::new(egui::include_image!("../../ferrex.png")).max_size(Vec2::new(18.0, 18.0)));
@@ -819,8 +812,8 @@ impl FerrexApp {
                 // 搜索图标
                 let (icon_rect, _) = ui.allocate_exact_size(Vec2::new(36.0, 34.0), Sense::hover());
                 let c = Pos2::new(icon_rect.center().x - 2.0, icon_rect.center().y - 2.0);
-                ui.painter().circle_stroke(c, 5.5, Stroke::new(1.5, TEXT3));
-                ui.painter().line_segment([Pos2::new(c.x + 4.0, c.y + 4.0), Pos2::new(c.x + 8.0, c.y + 8.0)], Stroke::new(1.5, TEXT3));
+                ui.painter().circle_stroke(c, 5.5, Stroke::new(1.0, TEXT3));
+                ui.painter().line_segment([Pos2::new(c.x + 4.0, c.y + 4.0), Pos2::new(c.x + 8.0, c.y + 8.0)], Stroke::new(1.0, TEXT3));
                 
                 // 搜索输入框
                 let search_edit = TextEdit::singleline(&mut self.query)
@@ -895,7 +888,7 @@ impl FerrexApp {
                     
                     let bg = if is_selected { Color32::from_rgba_unmultiplied(255, 140, 0, 25) } else if is_hovered { BG3 } else if idx % 2 == 0 { BG } else { BG2 };
                     ui.painter().rect_filled(rect, Rounding::ZERO, bg);
-                    if is_selected || is_hovered { ui.painter().line_segment([rect.left_top(), rect.left_bottom()], Stroke::new(3.0, ACCENT)); }
+                    if is_selected || is_hovered { ui.painter().line_segment([rect.left_top(), rect.left_bottom()], Stroke::new(1.0, ACCENT)); }
                     
                     if response.clicked() { new_selected = Some(idx); }
                     if response.secondary_clicked() { new_context_row = Some(idx); }
