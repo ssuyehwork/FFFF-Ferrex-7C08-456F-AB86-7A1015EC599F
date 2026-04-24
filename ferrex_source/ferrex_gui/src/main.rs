@@ -9,6 +9,7 @@ use egui::{
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::collections::{HashSet, HashMap};
+use serde::{Serialize, Deserialize};
 use std::process::Command;
 use std::time::{Instant, Duration};
 use std::num::NonZeroUsize;
@@ -38,6 +39,27 @@ const DANGER: Color32 = Color32::from_rgb(231, 76, 60);
 const TEXT: Color32 = Color32::from_rgb(200, 212, 220);
 const TEXT2: Color32 = Color32::from_rgb(122, 143, 158);
 const TEXT3: Color32 = Color32::from_rgb(61, 80, 96);
+
+#[derive(Serialize, Deserialize, Default)]
+struct AppConfig {
+    default_drives: HashSet<String>,
+    ignored_drives: HashSet<String>,
+}
+
+impl AppConfig {
+    fn load() -> Self {
+        std::fs::read_to_string("ferrex_config.toml")
+            .ok()
+            .and_then(|s| toml::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+
+    fn save(&self) {
+        if let Ok(s) = toml::to_string_pretty(self) {
+            let _ = std::fs::write("ferrex_config.toml", s);
+        }
+    }
+}
 
 struct IconCache {
     textures: HashMap<String, egui::TextureHandle>,
@@ -152,8 +174,7 @@ enum ScanProgress {
 struct FerrexApp {
     stores: Vec<VolumeStore>,
     active_drives: HashSet<String>,
-    ignored_drives: HashSet<String>,
-    default_drive: Option<String>,
+    config: AppConfig,
     query: String,
     ext_filter: String,
     results: Vec<SearchResult>,
@@ -185,11 +206,13 @@ impl FerrexApp {
         setup_fonts(&cc.egui_ctx);
         egui_extras::install_image_loaders(&cc.egui_ctx);
         
+        let _ = indexer::acquire_privileges();
+        let config = AppConfig::load();
+
         let mut app = Self {
             stores: Vec::new(),
-            active_drives: HashSet::new(),
-            ignored_drives: HashSet::new(),
-            default_drive: None,
+            active_drives: config.default_drives.clone(),
+            config,
             query: String::new(),
             ext_filter: String::new(),
             results: Vec::new(),
@@ -256,12 +279,15 @@ impl FerrexApp {
 
     fn load_volumes(&mut self) {
         let volumes = get_ntfs_volumes();
-        if self.default_drive.is_none() && !volumes.is_empty() {
-            self.default_drive = Some(volumes[0].clone());
+
+        if self.config.default_drives.is_empty() && !volumes.is_empty() {
+            self.config.default_drives.insert(volumes[0].clone());
+            self.active_drives.insert(volumes[0].clone());
+            self.config.save();
         }
 
         for vol in volumes {
-            if self.ignored_drives.contains(&vol) { continue; }
+            if self.config.ignored_drives.contains(&vol) { continue; }
             if self.stores.iter().any(|s| s.drive == vol) { continue; }
 
             let drive_letter = vol.chars().next().unwrap_or('c').to_lowercase().to_string();
@@ -477,16 +503,19 @@ impl eframe::App for FerrexApp {
             .frame(Frame::none().fill(BG2).inner_margin(Margin::symmetric(16.0, 0.0)))
             .show(ctx, |ui| { self.draw_drive_selector(ui, ctx); });
 
-        egui::TopBottomPanel::top("searchbar_area").frame(Frame::none().fill(PANEL)).show(ctx, |ui| {
-            Frame::none().inner_margin(Margin::symmetric(16.0, 8.0)).show(ui, |ui| {
-                self.draw_search_bar(ui, ctx);
+        egui::TopBottomPanel::top("searchbar_area")
+            .exact_height(if self.is_scanning { 50.0 } else { 48.0 })
+            .frame(Frame::none().fill(PANEL))
+            .show(ctx, |ui| {
+                Frame::none().inner_margin(Margin::symmetric(16.0, 8.0)).show(ui, |ui| {
+                    self.draw_search_bar(ui, ctx);
+                });
+                if self.is_scanning {
+                    ui.add(egui::ProgressBar::new(self.scan_progress)
+                        .text(RichText::new(&self.status_text).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(ACCENT))
+                        .fill(ACCENT).desired_height(2.0).rounding(Rounding::ZERO));
+                }
             });
-            if self.is_scanning { 
-                ui.add(egui::ProgressBar::new(self.scan_progress)
-                    .text(RichText::new(&self.status_text).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(ACCENT))
-                    .fill(ACCENT).desired_height(2.0).rounding(Rounding::ZERO));
-            }
-        });
 
         egui::TopBottomPanel::bottom("statusbar")
             .exact_height(26.0)
@@ -521,10 +550,10 @@ impl FerrexApp {
 
     fn draw_titlebar(&mut self, ui: &mut egui::Ui) {
         let rect = ui.available_rect_before_wrap();
-        // 绘制底部边框，百分之百还原参考版的物理边缘感
+        // 统一使用底部分割线，颜色参考版 #333
         ui.painter().line_segment(
             [rect.left_bottom(), rect.right_bottom()], 
-            Stroke::new(1.0, Color32::from_rgb(68, 68, 68)) // 参考版 #444
+            Stroke::new(1.0, Color32::from_rgb(51, 51, 51))
         );
 
         ui.horizontal_centered(|ui| {
@@ -653,7 +682,6 @@ impl FerrexApp {
     fn draw_drive_selector(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let mut toggle_drive = None;
         let mut ignore_drive = None;
-        let mut set_default = None;
 
         ui.horizontal_centered(|ui| {
             ui.label(RichText::new("DRIVES").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3));
@@ -668,16 +696,16 @@ impl FerrexApp {
             }
             ui.add_space(4.0);
             if ui.link(RichText::new("全清").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3)).clicked() {
-                if let Some(ref def) = self.default_drive {
-                    self.active_drives.clear();
+                self.active_drives.clear();
+                for def in &self.config.default_drives {
                     self.active_drives.insert(def.clone());
-                    self.run_search(ctx);
                 }
+                self.run_search(ctx);
             }
             ui.add_space(8.0);
             for store in &self.stores {
                 let is_active = self.active_drives.contains(&store.drive);
-                let is_default = self.default_drive.as_ref() == Some(&store.drive);
+                let is_default = self.config.default_drives.contains(&store.drive);
                 let label = if is_default { format!("★ {}:  {}", store.drive, format_count(store.record_count)) }
                             else { format!("{}:  {}", store.drive, format_count(store.record_count)) };
 
@@ -696,8 +724,14 @@ impl FerrexApp {
                 let drive = store.drive.clone();
                 response.context_menu(|ui| {
                     ui.set_min_width(140.0);
-                    if menu_item(ui, "设为默认选项") {
-                        set_default = Some(drive.clone());
+                    let is_default = self.config.default_drives.contains(&drive);
+                    if menu_item(ui, if is_default { "取消默认选项" } else { "设为默认选项" }) {
+                        if is_default {
+                            self.config.default_drives.remove(&drive);
+                        } else {
+                            self.config.default_drives.insert(drive.clone());
+                        }
+                        self.config.save();
                         ui.close_menu();
                     }
                     if menu_item(ui, "忽略此驱动器") {
@@ -710,7 +744,7 @@ impl FerrexApp {
 
             // 绘制被忽略的驱动器（半透明显示）
             let mut restore_drive = None;
-            for ignored in &self.ignored_drives {
+            for ignored in &self.config.ignored_drives {
                 let label = format!("{}: IGNORED", ignored);
                 let btn = egui::Button::new(RichText::new(&label).font(FontId::new(12.0, FontFamily::Name("cond".into()))).color(TEXT3))
                     .fill(Color32::TRANSPARENT)
@@ -728,20 +762,17 @@ impl FerrexApp {
                 });
                 ui.add_space(4.0);
             }
-            if let Some(drive) = set_default {
-                self.default_drive = Some(drive);
-            }
             if let Some(drive) = ignore_drive {
-                self.ignored_drives.insert(drive.clone());
+                self.config.ignored_drives.insert(drive.clone());
                 self.active_drives.remove(&drive);
-                if self.default_drive.as_ref() == Some(&drive) {
-                    self.default_drive = self.stores.iter().find(|s| s.drive != drive).map(|s| s.drive.clone());
-                }
+                self.config.default_drives.remove(&drive);
+                self.config.save();
                 self.stores.retain(|s| s.drive != drive);
                 self.run_search(ctx);
             }
             if let Some(drive) = restore_drive {
-                self.ignored_drives.remove(&drive);
+                self.config.ignored_drives.remove(&drive);
+                self.config.save();
                 self.load_volumes();
                 self.run_search(ctx);
             }
