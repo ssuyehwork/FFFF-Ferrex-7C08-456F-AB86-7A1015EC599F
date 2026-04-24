@@ -43,6 +43,7 @@ const SUCCESS: Color32 = Color32::from_rgb(70, 180, 120);
 
 #[derive(Serialize, Deserialize, Default)]
 struct AppConfig {
+    active_drives: HashSet<String>,
     default_drives: HashSet<String>,
     ignored_drives: HashSet<String>,
 }
@@ -212,7 +213,7 @@ impl FerrexApp {
 
         let mut app = Self {
             stores: Vec::new(),
-            active_drives: config.default_drives.clone(),
+            active_drives: config.active_drives.clone(),
             config,
             query: String::new(),
             ext_filter: String::new(),
@@ -281,9 +282,16 @@ impl FerrexApp {
     fn load_volumes(&mut self) {
         let volumes = get_ntfs_volumes();
         
-        if self.config.default_drives.is_empty() && !volumes.is_empty() {
-            self.config.default_drives.insert(volumes[0].clone());
-            self.active_drives.insert(volumes[0].clone());
+        if self.config.active_drives.is_empty() && !volumes.is_empty() {
+            for vol in &volumes {
+                if !self.config.ignored_drives.contains(vol) {
+                    self.config.active_drives.insert(vol.clone());
+                    self.active_drives.insert(vol.clone());
+                }
+            }
+            if self.config.default_drives.is_empty() && !volumes.is_empty() {
+                self.config.default_drives.insert(volumes[0].clone());
+            }
             self.config.save();
         }
 
@@ -299,7 +307,6 @@ impl FerrexApp {
                 let frn_map = store.build_frn_map();
                 let usn_rx = spawn_usn_watcher(&vol).ok();
                 
-                self.active_drives.insert(vol.clone());
                 self.stores.push(VolumeStore {
                     drive: vol,
                     record_count: store.frns.len(),
@@ -704,6 +711,8 @@ impl FerrexApp {
                 for store in &self.stores {
                     self.active_drives.insert(store.drive.clone());
                 }
+                self.config.active_drives = self.active_drives.clone();
+                self.config.save();
                 self.run_search(ctx);
             }
             ui.add_space(4.0);
@@ -712,6 +721,8 @@ impl FerrexApp {
                 for def in &self.config.default_drives {
                     self.active_drives.insert(def.clone());
                 }
+                self.config.active_drives = self.active_drives.clone();
+                self.config.save();
                 self.run_search(ctx);
             }
             ui.add_space(8.0);
@@ -793,6 +804,8 @@ impl FerrexApp {
         if let Some((drive, was_active)) = toggle_drive {
             if was_active && self.active_drives.len() > 1 { self.active_drives.remove(&drive); }
             else if !was_active { self.active_drives.insert(drive); }
+            self.config.active_drives = self.active_drives.clone();
+            self.config.save();
             self.run_search(ctx);
         }
     }
