@@ -961,7 +961,7 @@ impl FerrexApp {
                         Align2::CENTER_CENTER,
                         &result.drive[..2],
                         FontId::new(9.0, FontFamily::Name("cond".into())),
-                        TEXT3,
+                        Color32::WHITE,
                     );
                     x += TAG_W + 6.0;
 
@@ -1158,13 +1158,12 @@ impl FerrexApp {
 
 fn col_header_btn(ui: &mut egui::Ui, text: &str, width: f32) -> bool {
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 22.0), Sense::click());
-    let color = if response.hovered() { ACCENT } else { Color32::WHITE };
     ui.painter().text(
         Pos2::new(rect.left(), rect.center().y),
         Align2::LEFT_CENTER,
         text,
         FontId::new(10.0, FontFamily::Name("cond".into())),
-        color,
+        Color32::WHITE,
     );
     response.clicked()
 }
