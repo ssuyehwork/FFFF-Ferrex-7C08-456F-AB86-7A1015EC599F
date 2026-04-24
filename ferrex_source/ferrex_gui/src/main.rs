@@ -879,8 +879,9 @@ impl FerrexApp {
                     if response.secondary_clicked() { new_context_row = Some(idx); }
                     
                     let mut child_ui = ui.child_ui(rect, Layout::left_to_right(Align::Center), None);
+                    child_ui.spacing_mut().item_spacing.x = 0.0;
 
-                    // 图标与标签区域 (ICON_SECTION_W)
+                    // 1. 图标与标签区域 (ICON_SECTION_W)
                     let (icon_rect, _) = child_ui.allocate_exact_size(Vec2::new(ICON_SECTION_W, ROW_HEIGHT), Sense::hover());
                     let mut icon_ui = child_ui.child_ui(icon_rect, Layout::left_to_right(Align::Center), None);
                     icon_ui.spacing_mut().item_spacing.x = 0.0;
@@ -889,19 +890,35 @@ impl FerrexApp {
                     let result = &self.results[idx];
                     icon_ui.add(Image::new(self.icons.get_for_path(ui.ctx(), &result.name, result.is_dir)).max_size(Vec2::new(14.0, 14.0)));
                     icon_ui.add_space(8.0);
-                    
+
                     let (tag_rect, _) = icon_ui.allocate_exact_size(Vec2::new(22.0, 14.0), Sense::hover());
                     icon_ui.painter().rect_stroke(tag_rect, 1.0, Stroke::new(1.0, BORDER2));
                     icon_ui.painter().text(tag_rect.center(), Align2::CENTER_CENTER, &result.drive[..2], FontId::new(9.0, FontFamily::Name("cond".into())), TEXT3);
                     
-                    child_ui.add_sized([NAME_COL_W, 20.0], Label::new(RichText::new(&result.name).font(FontId::new(12.5, FontFamily::Name("mono".into()))).color(TEXT)).truncate());
+                    // 2. NAME 列 - 显式使用左对齐布局容器
+                    let (name_rect, _) = child_ui.allocate_exact_size(Vec2::new(NAME_COL_W, ROW_HEIGHT), Sense::hover());
+                    child_ui.child_ui(name_rect, Layout::left_to_right(Align::Center), None).add(
+                        Label::new(RichText::new(&result.name).font(FontId::new(12.5, FontFamily::Name("mono".into()))).color(TEXT)).truncate()
+                    );
+
+                    // 3. PATH 列
+                    let path_w = child_ui.available_width() - SIZE_COL_W - DATE_COL_W - 32.0;
+                    let (path_rect, _) = child_ui.allocate_exact_size(Vec2::new(path_w, ROW_HEIGHT), Sense::hover());
+                    child_ui.child_ui(path_rect, Layout::left_to_right(Align::Center), None).add(
+                        Label::new(RichText::new(&result.full_path).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(TEXT3)).truncate()
+                    );
                     
-                    let remaining_w = child_ui.available_width();
-                    let path_w = remaining_w - SIZE_COL_W - DATE_COL_W - 32.0;
-                    child_ui.add_sized([path_w, 20.0], Label::new(RichText::new(&result.full_path).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(TEXT3)).truncate());
+                    // 4. SIZE 列
+                    let (size_rect, _) = child_ui.allocate_exact_size(Vec2::new(SIZE_COL_W, ROW_HEIGHT), Sense::hover());
+                    child_ui.child_ui(size_rect, Layout::left_to_right(Align::Center), None).add(
+                        Label::new(RichText::new(format_size(result.size)).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(TEXT2))
+                    );
                     
-                    child_ui.add_sized([SIZE_COL_W, 20.0], Label::new(RichText::new(format_size(result.size)).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(TEXT2)));
-                    child_ui.add_sized([DATE_COL_W, 20.0], Label::new(RichText::new(format_timestamp(result.timestamp)).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(TEXT3)));
+                    // 5. DATE 列
+                    let (date_rect, _) = child_ui.allocate_exact_size(Vec2::new(DATE_COL_W, ROW_HEIGHT), Sense::hover());
+                    child_ui.child_ui(date_rect, Layout::left_to_right(Align::Center), None).add(
+                        Label::new(RichText::new(format_timestamp(result.timestamp)).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(TEXT3))
+                    );
                 }
             });
         });
