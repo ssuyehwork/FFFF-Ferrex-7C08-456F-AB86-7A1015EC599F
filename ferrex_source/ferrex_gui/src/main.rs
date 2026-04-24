@@ -45,11 +45,12 @@ const DRIVE_BAR_HEIGHT: f32 = 40.0;
 const STATUS_BAR_HEIGHT: f32 = 26.0;
 const ROW_HEIGHT: f32 = 30.0;
 const SEARCH_BAR_HEIGHT: f32 = 34.0;
+const SEARCH_SECTION_HEIGHT: f32 = 52.0; // 34 (bar) + 16 (margin) + 2 (progress placeholder)
 
 const NAME_COL_W: f32 = 260.0;
 const SIZE_COL_W: f32 = 80.0;
 const DATE_COL_W: f32 = 130.0;
-const ICON_SECTION_W: f32 = 58.0; // 8 (space) + 14 (icon) + 8 (space) + 22 (tag) + 6 (space)
+const ICON_SECTION_W: f32 = 58.0;
 
 struct IconCache {
     textures: HashMap<String, egui::TextureHandle>,
@@ -490,7 +491,7 @@ impl eframe::App for FerrexApp {
             .show(ctx, |ui| { self.draw_drive_selector(ui, ctx); });
 
         egui::TopBottomPanel::top("searchbar_area")
-            .exact_height(52.0)
+            .exact_height(SEARCH_SECTION_HEIGHT)
             .frame(Frame::none().fill(PANEL))
             .show(ctx, |ui| {
                 ui.vertical(|ui| {
