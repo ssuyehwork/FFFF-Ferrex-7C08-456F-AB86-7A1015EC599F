@@ -490,6 +490,7 @@ impl eframe::App for FerrexApp {
             .show(ctx, |ui| { self.draw_drive_selector(ui, ctx); });
 
         egui::TopBottomPanel::top("searchbar_area")
+            .exact_height(52.0)
             .frame(Frame::none().fill(PANEL))
             .show(ctx, |ui| {
                 ui.vertical(|ui| {
@@ -501,7 +502,7 @@ impl eframe::App for FerrexApp {
                             .text(RichText::new(&self.status_text).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(ACCENT))
                             .fill(ACCENT).desired_height(2.0).rounding(Rounding::ZERO));
                     } else {
-                        ui.add_space(2.0); // 占位符，防止布局抖动
+                        ui.add_space(2.0);
                     }
                 });
             });
@@ -675,17 +676,17 @@ impl FerrexApp {
         let mut restore_drive = None;
 
         ui.horizontal(|ui| {
-            ui.add_space(0.0);
+            ui.add_space(8.0);
             ui.set_height(DRIVE_BAR_HEIGHT);
 
-            ui.vertical_centered(|ui| {
+            ui.vertical(|ui| {
                 ui.add_space(14.0);
                 ui.label(RichText::new("DRIVES").font(FontId::new(9.0, FontFamily::Name("cond".into()))).color(TEXT3));
             });
             ui.add_space(8.0);
 
             // 全选 / 全清 逻辑
-            ui.vertical_centered(|ui| {
+            ui.vertical(|ui| {
                 ui.add_space(13.0);
                 ui.horizontal(|ui| {
                     if ui.link(RichText::new("全选").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3)).clicked() {
@@ -938,7 +939,7 @@ impl FerrexApp {
 
     fn draw_empty_state(&self, ui: &mut egui::Ui) {
         ui.vertical_centered(|ui| {
-            ui.add_space(100.0);
+            ui.add_space(20.0);
             ui.label(RichText::new("无匹配结果").font(FontId::new(14.0, FontFamily::Name("cond".into()))).color(TEXT3));
         });
     }
@@ -1022,7 +1023,7 @@ impl FerrexApp {
 fn header_label(ui: &mut egui::Ui, text: &str, width: f32) -> bool {
     let (rect, response) = ui.allocate_at_least(Vec2::new(width, 20.0), Sense::click());
     if ui.is_rect_visible(rect) {
-        let mut child_ui = ui.child_ui(rect, Layout::left_to_right(Align::Center), None);
+        let mut child_ui = ui.child_ui(rect, Layout::left_to_right(Align::Min), None);
         let color = if response.hovered() { ACCENT } else { TEXT3 };
         child_ui.add(Label::new(RichText::new(text).font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(color).extra_letter_spacing(1.5)));
     }
