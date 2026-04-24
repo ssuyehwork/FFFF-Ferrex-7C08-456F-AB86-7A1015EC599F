@@ -337,7 +337,7 @@ impl FerrexApp {
         if let Some(icon) = load_icon() {
             let tray = tray_icon::TrayIconBuilder::new()
                 .with_menu(Box::new(tray_menu))
-                .with_tooltip("FerREX")
+                .with_tooltip("FERREX")
                 .with_icon(icon)
                 .build()
                 .ok();
@@ -1211,7 +1211,7 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1000.0, 700.0])
             .with_min_inner_size([800.0, 500.0])
-            .with_title("FerREX")
+            .with_title("FERREX")
             .with_icon(icon.unwrap_or_default())
             .with_decorations(false), 
         ..Default::default() 
