@@ -45,6 +45,40 @@ impl IndexStore {
         }
     }
 
+    pub fn from_mapped(mapped: &MappedIndex) -> Self {
+        let mut store = Self::new();
+        let records_ptr = unsafe {
+            mapped.mmap.as_ptr().add(HEADER_SIZE) as *const FileRecord
+        };
+        let records = unsafe {
+            std::slice::from_raw_parts(records_ptr, mapped.record_count)
+        };
+
+        store.frns.reserve(mapped.record_count);
+        store.parent_frns.reserve(mapped.record_count);
+        store.sizes.reserve(mapped.record_count);
+        store.timestamps.reserve(mapped.record_count);
+        store.name_offsets.reserve(mapped.record_count);
+        store.flags.reserve(mapped.record_count);
+
+        for r in records {
+            store.frns.push(r.frn);
+            store.parent_frns.push(r.parent_frn);
+            store.sizes.push(r.size);
+            store.timestamps.push(r.timestamp);
+            store.name_offsets.push(r.name_offset);
+            store.flags.push(r.flags);
+        }
+
+        let pool_ptr = unsafe { mapped.mmap.as_ptr().add(mapped.string_pool_offset) };
+        let pool_len = mapped.mmap.len() - mapped.string_pool_offset;
+        store.string_pool = unsafe { std::slice::from_raw_parts(pool_ptr, pool_len).to_vec() };
+        store.usn_watermark = mapped.usn_watermark;
+        store.volume_serial = mapped.volume_serial;
+
+        store
+    }
+
     /// Build a sorted index array (indices into records, sorted by lowercase filename).
     /// Call once after loading. Store result in FerrexApp.
     pub fn build_sorted_idx(&self) -> Vec<u32> {

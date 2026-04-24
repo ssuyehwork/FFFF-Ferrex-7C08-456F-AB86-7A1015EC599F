@@ -66,12 +66,6 @@ pub fn get_ntfs_volumes() -> Vec<String> {
     volumes
 }
 
-pub fn get_ntfs_volumes_filtered(exclude_prefixes: &[String]) -> Vec<String> {
-    get_ntfs_volumes()
-        .into_iter()
-        .filter(|v| !exclude_prefixes.iter().any(|ex| v.starts_with(ex)))
-        .collect()
-}
 
 #[derive(Debug, Clone)]
 pub struct RawEntry {

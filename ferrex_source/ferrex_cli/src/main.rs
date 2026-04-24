@@ -75,24 +75,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if Path::new(&idx_path).exists() {
                     if let Ok(mapped) = MappedIndex::load(&idx_path) {
                         println!("Loaded index: {} ({} records)", idx_path, mapped.record_count);
-                        let mut store = IndexStore::new();
-                        let record_raw_ptr = unsafe {
-                            mapped.mmap.as_ptr().add(storage::HEADER_SIZE) as *const storage::FileRecord
-                        };
-                        let records = unsafe {
-                            std::slice::from_raw_parts(record_raw_ptr, mapped.record_count)
-                        };
-                        let pool = &mapped.mmap[mapped.string_pool_offset..];
-                        
-                        for r in records {
-                            store.frns.push(r.frn);
-                            store.parent_frns.push(r.parent_frn);
-                            store.sizes.push(r.size);
-                            store.timestamps.push(r.timestamp);
-                            store.flags.push(r.flags);
-                            store.name_offsets.push(r.name_offset);
-                        }
-                        store.string_pool = pool.to_vec();
+                        let mut store = IndexStore::from_mapped(&mapped);
                         store.rebuild_lookups();
                         loaded_stores.push((d.to_uppercase().to_string(), Arc::new(store)));
                     }
@@ -114,7 +97,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 for idx in matches {
                     let path = store.get_path(idx);
                     let name_offset = store.name_offsets[idx] as usize;
-                    let name = pool_get_name(&store.string_pool, name_offset);
+                    let name = storage::pool_get_name(&store.string_pool, name_offset);
                     println!("{}:\\{}\\{}", drive_letter, path, name);
                 }
             }
@@ -125,11 +108,4 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
-}
-
-fn pool_get_name(pool: &[u8], offset: usize) -> String {
-    if offset >= pool.len() { return String::new(); }
-    let slice = &pool[offset..];
-    let end = slice.iter().position(|&b| b == 0).unwrap_or(slice.len());
-    String::from_utf8_lossy(&slice[..end]).to_string()
 }

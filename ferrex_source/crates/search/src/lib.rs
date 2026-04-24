@@ -5,10 +5,6 @@ pub struct SearchOptions<'a> {
     pub query:        &'a str,           // substring or regex pattern
     pub use_regex:    bool,
     pub ext_filter:   Option<&'a str>,   // e.g. "rs" — no dot
-    pub min_size:     Option<u64>,       // bytes
-    pub max_size:     Option<u64>,       // bytes
-    pub date_from:    Option<u64>,       // FILETIME u64
-    pub date_to:      Option<u64>,       // FILETIME u64
     pub include_dirs: bool,              // false = files only
     pub include_hidden:  bool,
     pub include_system:  bool,
@@ -20,10 +16,6 @@ impl Default for SearchOptions<'_> {
             query: "",
             use_regex: false,
             ext_filter: None,
-            min_size: None,
-            max_size: None,
-            date_from: None,
-            date_to: None,
             include_dirs: true,
             include_hidden: false,
             include_system: false,
@@ -63,10 +55,7 @@ impl<'a> Searcher<'a> {
     }
 
     pub fn search(&self, opts: &SearchOptions) -> Vec<usize> {
-        if opts.query.is_empty() && opts.ext_filter.is_none()
-            && opts.min_size.is_none() && opts.max_size.is_none()
-            && opts.date_from.is_none() && opts.date_to.is_none()
-        {
+        if opts.query.is_empty() && opts.ext_filter.is_none() {
             return Vec::new();
         }
 
@@ -101,26 +90,6 @@ impl<'a> Searcher<'a> {
                 if is_dir && !opts.include_dirs { return false; }
                 if is_hidden && !opts.include_hidden { return false; }
                 if is_system && !opts.include_system { return false; }
-
-                // Size filter (skip for directories)
-                if !is_dir {
-                    let size = self.sizes[idx];
-                    if let Some(min) = opts.min_size {
-                        if size < min { return false; }
-                    }
-                    if let Some(max) = opts.max_size {
-                        if size > max { return false; }
-                    }
-                }
-
-                // Date filter
-                let timestamp = self.timestamps[idx];
-                if let Some(from) = opts.date_from {
-                    if timestamp < from { return false; }
-                }
-                if let Some(to) = opts.date_to {
-                    if timestamp > to { return false; }
-                }
 
                 // Get name bytes from pool
                 let offset = self.name_offsets[idx] as usize;

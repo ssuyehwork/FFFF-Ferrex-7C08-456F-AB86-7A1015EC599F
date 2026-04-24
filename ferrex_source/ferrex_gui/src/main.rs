@@ -33,7 +33,6 @@ const BG2: Color32 = Color32::from_rgb(17, 21, 25);
 const BG3: Color32 = Color32::from_rgb(22, 27, 32);
 const BORDER2: Color32 = Color32::from_rgb(37, 46, 55);
 const ACCENT: Color32 = Color32::from_rgb(255, 140, 0);
-const SUCCESS: Color32 = Color32::from_rgb(46, 204, 113);
 const DANGER: Color32 = Color32::from_rgb(231, 76, 60);
 const TEXT: Color32 = Color32::from_rgb(200, 212, 220);
 const TEXT2: Color32 = Color32::from_rgb(122, 143, 158);
@@ -145,13 +144,14 @@ enum SortColumn { Name, Path, Size, Date }
 
 enum ScanProgress {
     Progress { done: usize, total: usize },
-    Done { drive: String, idx_path: String },
+    Done,
     Error(String),
 }
 
 struct FerrexApp {
     stores: Vec<VolumeStore>,
     active_drives: HashSet<String>,
+    ignored_drives: HashSet<String>,
     query: String,
     ext_filter: String,
     results: Vec<SearchResult>,
@@ -185,6 +185,7 @@ impl FerrexApp {
         let mut app = Self {
             stores: Vec::new(),
             active_drives: HashSet::new(),
+            ignored_drives: HashSet::new(),
             query: String::new(),
             ext_filter: String::new(),
             results: Vec::new(),
@@ -251,25 +252,14 @@ impl FerrexApp {
     fn load_volumes(&mut self) {
         let volumes = get_ntfs_volumes();
         for vol in volumes {
+            if self.ignored_drives.contains(&vol) { continue; }
+            if self.stores.iter().any(|s| s.drive == vol) { continue; }
+
             let drive_letter = vol.chars().next().unwrap_or('c').to_lowercase().to_string();
             let idx_path = format!("{}_drive.idx", drive_letter);
             
             if let Ok(mapped) = MappedIndex::load(&idx_path) {
-                let mut store = IndexStore::new();
-                let records_ptr = unsafe { mapped.mmap.as_ptr().add(storage::HEADER_SIZE) as *const storage::FileRecord };
-                for i in 0..mapped.record_count {
-                    let rec = unsafe { &*records_ptr.add(i) };
-                    store.frns.push(rec.frn);
-                    store.parent_frns.push(rec.parent_frn);
-                    store.sizes.push(rec.size);
-                    store.timestamps.push(rec.timestamp);
-                    store.name_offsets.push(rec.name_offset);
-                    store.flags.push(rec.flags);
-                }
-                let pool_ptr = unsafe { mapped.mmap.as_ptr().add(mapped.string_pool_offset) };
-                let pool_len = mapped.mmap.len() - mapped.string_pool_offset;
-                store.string_pool = unsafe { std::slice::from_raw_parts(pool_ptr, pool_len).to_vec() };
-                
+                let store = IndexStore::from_mapped(&mapped);
                 let frn_map = store.build_frn_map();
                 let usn_rx = spawn_usn_watcher(&vol).ok();
                 
@@ -329,10 +319,6 @@ impl FerrexApp {
             query: &self.query,
             use_regex: false,
             ext_filter: if self.ext_filter.is_empty() { None } else { Some(&self.ext_filter) },
-            min_size: None,
-            max_size: None,
-            date_from: None,
-            date_to: None,
             include_dirs: true,
             include_hidden: false,
             include_system: false,
@@ -449,7 +435,7 @@ impl eframe::App for FerrexApp {
             if self.is_scanning { 
                 ui.add(egui::ProgressBar::new(self.scan_progress)
                     .text(RichText::new(&self.status_text).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(ACCENT))
-                    .fill(ACCENT).desired_height(4.0).rounding(Rounding::ZERO)); 
+                    .fill(ACCENT).desired_height(2.0).rounding(Rounding::ZERO));
             }
         });
 
@@ -617,6 +603,8 @@ impl FerrexApp {
 
     fn draw_drive_selector(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let mut toggle_drive = None;
+        let mut ignore_drive = None;
+
         ui.horizontal_centered(|ui| {
             ui.label(RichText::new("DRIVES").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3));
             ui.add_space(8.0);
@@ -624,11 +612,58 @@ impl FerrexApp {
                 let is_active = self.active_drives.contains(&store.drive);
                 let label = format!("{}:  {}", store.drive, format_count(store.record_count));
                 let (bg, stroke_color, text_color) = if is_active { (Color32::from_rgba_unmultiplied(255, 140, 0, 30), ACCENT, ACCENT) } else { (BG3, BORDER2, TEXT2) };
-                let btn = egui::Button::new(RichText::new(&label).font(FontId::new(12.0, FontFamily::Name("cond".into()))).color(text_color)).fill(bg).stroke(Stroke::new(1.0, stroke_color)).rounding(Rounding::ZERO);
-                if ui.add(btn).clicked() {
+
+                let btn = egui::Button::new(RichText::new(&label).font(FontId::new(12.0, FontFamily::Name("cond".into()))).color(text_color))
+                    .fill(bg)
+                    .stroke(Stroke::new(1.0, stroke_color))
+                    .rounding(Rounding::ZERO);
+
+                let response = ui.add(btn);
+                if response.clicked() {
                     toggle_drive = Some((store.drive.clone(), is_active));
                 }
+
+                let drive = store.drive.clone();
+                response.context_menu(|ui| {
+                    ui.set_min_width(120.0);
+                    if menu_item(ui, "忽略此驱动器") {
+                        ignore_drive = Some(drive);
+                        ui.close_menu();
+                    }
+                });
                 ui.add_space(4.0);
+            }
+
+            // 绘制被忽略的驱动器（半透明显示）
+            let mut restore_drive = None;
+            for ignored in &self.ignored_drives {
+                let label = format!("{}: IGNORED", ignored);
+                let btn = egui::Button::new(RichText::new(&label).font(FontId::new(12.0, FontFamily::Name("cond".into()))).color(TEXT3))
+                    .fill(Color32::TRANSPARENT)
+                    .stroke(Stroke::new(1.0, TEXT3.gamma_multiply(0.2)))
+                    .rounding(Rounding::ZERO);
+                let response = ui.add(btn);
+
+                let drive = ignored.clone();
+                response.context_menu(|ui| {
+                    ui.set_min_width(120.0);
+                    if menu_item(ui, "恢复驱动器") {
+                        restore_drive = Some(drive);
+                        ui.close_menu();
+                    }
+                });
+                ui.add_space(4.0);
+            }
+            if let Some(drive) = ignore_drive {
+                self.ignored_drives.insert(drive.clone());
+                self.active_drives.remove(&drive);
+                self.stores.retain(|s| s.drive != drive);
+                self.run_search(ctx);
+            }
+            if let Some(drive) = restore_drive {
+                self.ignored_drives.remove(&drive);
+                self.load_volumes();
+                self.run_search(ctx);
             }
         });
 
@@ -853,7 +888,7 @@ impl FerrexApp {
                         self.scan_progress = if total == 0 { 0.0 } else { done as f32 / total as f32 }; 
                         self.status_text = format!("正在扫描 {}/{}", done, total); 
                     }
-                    ScanProgress::Done { .. } => { 
+                    ScanProgress::Done => {
                         self.is_scanning = false; 
                         drop_rx = true;
                         self.status_text = "扫描完成".to_string(); 
@@ -934,34 +969,13 @@ fn open_properties(path: &str) {
 
 #[cfg(windows)]
 fn load_icon() -> Option<tray_icon::Icon> {
-    let image = image::open("ferrex.png").ok()?.into_rgba8();
+    let icon_bytes = include_bytes!("../../ferrex.png");
+    let image = image::load_from_memory(icon_bytes).ok()?.into_rgba8();
     let (width, height) = image.dimensions();
     let rgba = image.into_raw();
     tray_icon::Icon::from_rgba(rgba, width, height).ok()
 }
 
-#[cfg(windows)]
-fn set_startup(enabled: bool) {
-    use windows::Win32::System::Registry::*;
-    use windows::core::{HSTRING, w};
-    unsafe {
-        let key_path = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-        let mut h_key = HKEY::default();
-        let _ = RegOpenKeyExW(HKEY_CURRENT_USER, key_path, 0, KEY_SET_VALUE, &mut h_key);
-        if enabled {
-            let exe = std::env::current_exe().unwrap_or_default();
-            let val = HSTRING::from(exe.to_string_lossy().as_ref());
-            let bytes = val.as_wide();
-            let _ = RegSetValueExW(
-                h_key, w!("Ferrex"), 0, REG_SZ,
-                Some(std::slice::from_raw_parts(bytes.as_ptr() as *const u8, bytes.len()*2))
-            );
-        } else {
-            let _ = RegDeleteValueW(h_key, w!("Ferrex"));
-        }
-        let _ = RegCloseKey(h_key);
-    }
-}
 
 fn setup_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
@@ -1034,7 +1048,11 @@ fn spawn_scan(vol: String, tx: std::sync::mpsc::Sender<ScanProgress>) {
         match scanner.scan() {
             Ok(entries) => {
                 let mut store = IndexStore::new();
-                for entry in entries {
+                let total = entries.len();
+                for (i, entry) in entries.into_iter().enumerate() {
+                    if i % 10000 == 0 {
+                        let _ = tx.send(ScanProgress::Progress { done: i, total });
+                    }
                     let offset = store.string_pool.len() as u32;
                     store.string_pool.extend_from_slice(entry.name.as_bytes()); 
                     store.string_pool.push(0);
@@ -1048,7 +1066,7 @@ fn spawn_scan(vol: String, tx: std::sync::mpsc::Sender<ScanProgress>) {
                 let drive_letter = vol.chars().next().unwrap_or('c').to_lowercase().to_string();
                 let idx_path = format!("{}_drive.idx", drive_letter);
                 let _ = storage::save_index(&idx_path, &store);
-                let _ = tx.send(ScanProgress::Done { drive: vol, idx_path: idx_path });
+                let _ = tx.send(ScanProgress::Done);
             }
             Err(e) => { let _ = tx.send(ScanProgress::Error(e.to_string())); }
         }
