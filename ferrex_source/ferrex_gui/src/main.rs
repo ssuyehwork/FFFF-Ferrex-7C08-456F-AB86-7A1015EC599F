@@ -537,14 +537,31 @@ impl FerrexApp {
                 if store.overlay.contains_key(&frn) { continue; }
                 let name = pool_get_name(&store.index.string_pool, store.index.name_offsets[rec_idx] as usize);
                 let full_path = store.resolve_live_path(frn);
+                let is_dir = store.index.flags[rec_idx] & 0x10 != 0;
                 
+                let mut size = store.index.sizes[rec_idx];
+                #[allow(unused_mut)]
+                let mut timestamp = store.index.timestamps[rec_idx];
+
+                // 核心修复 1：针对底层 MFT 扫描遗漏大小的情况（0字节），执行即时元数据补偿
+                if !is_dir && size == 0 {
+                    if let Ok(meta) = std::fs::metadata(&full_path) {
+                        size = meta.len();
+                        #[cfg(windows)]
+                        {
+                            use std::os::windows::fs::MetadataExt;
+                            timestamp = meta.last_write_time(); // 同步修正精确的修改时间
+                        }
+                    }
+                }
+
                 all_results.push(SearchResult {
                     drive: store.drive.clone(),
                     name,
                     full_path,
-                    size: store.index.sizes[rec_idx],
-                    timestamp: store.index.timestamps[rec_idx],
-                    is_dir: store.index.flags[rec_idx] & 0x10 != 0,
+                    size,
+                    timestamp,
+                    is_dir,
                 });
                 if all_results.len() >= 5000 { break; }
             }
@@ -557,13 +574,36 @@ impl FerrexApp {
 
                 for (frn, name, flags) in candidates {
                     let full_path = store.resolve_live_path(frn);
+                    let is_dir = flags & 0x10 != 0;
+
+                    let mut size = 0;
+
+                    // 修复：建立兼容 Windows FILETIME 标准的当前时间戳兜底 (Epoch 为 1601年)
+                    #[allow(unused_mut)]
+                    let mut timestamp = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+                        Ok(d) => (d.as_secs() + 11644473600) * 10_000_000,
+                        Err(_) => 0,
+                    };
+
+                    // 核心修复 2：动态向系统索要 USN 覆盖层（新产生/修改过）的真实大小
+                    if let Ok(meta) = std::fs::metadata(&full_path) {
+                        if !is_dir {
+                            size = meta.len();
+                        }
+                        #[cfg(windows)]
+                        {
+                            use std::os::windows::fs::MetadataExt;
+                            timestamp = meta.last_write_time();
+                        }
+                    }
+
                     all_results.push(SearchResult {
                         drive: store.drive.clone(),
                         name,
                         full_path,
-                        size: 0, 
-                        timestamp: Instant::now().elapsed().as_secs(), 
-                        is_dir: flags & 0x10 != 0,
+                        size,
+                        timestamp,
+                        is_dir,
                     });
                     if all_results.len() >= 5000 { break; }
                 }
