@@ -3,7 +3,7 @@
 use eframe::egui;
 use egui::{
     Color32, RichText, FontId, FontFamily, Pos2, Vec2, Margin, Frame, Sense, Layout, 
-    Align, Align2, Stroke, Rounding, Label, Image, TextEdit, ScrollArea, Area, 
+    Align, Align2, Stroke, Rounding, Image, TextEdit, ScrollArea, Area,
     Order, ViewportCommand, Id, Direction
 };
 use std::sync::Arc;
@@ -856,70 +856,190 @@ impl FerrexApp {
     }
 
     fn draw_column_header(&mut self, ui: &mut egui::Ui) {
+        const ICON_W:  f32 = 14.0;
+        const TAG_W:   f32 = 22.0;
+        const NAME_W:  f32 = 260.0;
+        const SIZE_W:  f32 = 80.0;
+        const DATE_W:  f32 = 130.0;
+        const PADDING: f32 = 8.0 + 8.0 + 6.0 + 16.0;
+
+        let total_w = ui.available_width();
+        let path_w  = (total_w - ICON_W - TAG_W - NAME_W - SIZE_W - DATE_W - PADDING).max(40.0);
+
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
-            ui.add_space(58.0); // 8 + 14 + 8 + 22 + 6
-            
-            let total_w = ui.available_width();
-            let name_w = 260.0;
-            let size_w = 80.0;
-            let date_w = 130.0;
-            let path_w = total_w - name_w - size_w - date_w - 32.0;
+            // skip icon + tag columns
+            let skip = ICON_W + 8.0 + TAG_W + 6.0 + 8.0;
+            ui.add_space(skip);
 
-            if header_label(ui, "NAME", name_w) { self.sort_col = SortColumn::Name; self.sort_asc = !self.sort_asc; self.apply_sort(); }
-            if header_label(ui, "PATH", path_w) { self.sort_col = SortColumn::Path; self.sort_asc = !self.sort_asc; self.apply_sort(); }
-            if header_label(ui, "SIZE", size_w) { self.sort_col = SortColumn::Size; self.sort_asc = !self.sort_asc; self.apply_sort(); }
-            if header_label(ui, "DATE", date_w) { self.sort_col = SortColumn::Date; self.sort_asc = !self.sort_asc; self.apply_sort(); }
+            if col_header_btn(ui, "NAME", NAME_W) { self.sort_col = SortColumn::Name; self.sort_asc = !self.sort_asc; self.apply_sort(); }
+            if col_header_btn(ui, "PATH", path_w) { self.sort_col = SortColumn::Path; self.sort_asc = !self.sort_asc; self.apply_sort(); }
+            if col_header_btn(ui, "SIZE", SIZE_W)  { self.sort_col = SortColumn::Size; self.sort_asc = !self.sort_asc; self.apply_sort(); }
+            if col_header_btn(ui, "DATE", DATE_W)  { self.sort_col = SortColumn::Date; self.sort_asc = !self.sort_asc; self.apply_sort(); }
         });
     }
 
     fn draw_results_list(&mut self, ui: &mut egui::Ui) {
-        if self.results.is_empty() { self.draw_empty_state(ui); return; }
+        if self.results.is_empty() {
+            self.draw_empty_state(ui);
+            return;
+        }
 
-        let mut new_context_row = None;
-        let mut new_selected = None;
+        let mut new_context_row: Option<usize> = None;
+        let mut new_selected:    Option<usize> = None;
 
-        let available_width = ui.available_width();
-        let results_to_show = self.results.len().min(200);
+        let available_width  = ui.available_width();
+        let results_to_show  = self.results.len().min(200);
 
-        ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            ui.with_layout(Layout::top_down(Align::Min), |ui| {
+        // Fixed column widths — must add up to less than available_width
+        const ICON_W:   f32 = 14.0;
+        const TAG_W:    f32 = 22.0;
+        const NAME_W:   f32 = 260.0;
+        const SIZE_W:   f32 = 80.0;
+        const DATE_W:   f32 = 130.0;
+        const PADDING:  f32 = 8.0 + 8.0 + 6.0 + 16.0; // left gap + icon-gap + tag-gap + right
+        // PATH gets whatever is left
+        let path_w = (available_width - ICON_W - TAG_W - NAME_W - SIZE_W - DATE_W - PADDING).max(40.0);
+
+        ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+
                 for idx in 0..results_to_show {
                     let is_selected = self.selected_rows.contains(&idx);
-                    let (rect, response) = ui.allocate_at_least(Vec2::new(available_width, 30.0), Sense::click());
+                    let result      = self.results[idx].clone();
+
+                    // Allocate the full-width row rect
+                    let (rect, response) = ui.allocate_exact_size(
+                        Vec2::new(available_width, 30.0),
+                        Sense::click(),
+                    );
+
                     let is_hovered = response.hovered();
-                    
-                    let bg = if is_selected { Color32::from_rgba_unmultiplied(255, 140, 0, 25) } else if is_hovered { BG3 } else if idx % 2 == 0 { BG } else { BG2 };
+
+                    // Row background
+                    let bg = if is_selected {
+                        Color32::from_rgba_unmultiplied(255, 140, 0, 25)
+                    } else if is_hovered {
+                        BG3
+                    } else if idx % 2 == 0 {
+                        BG
+                    } else {
+                        BG2
+                    };
                     ui.painter().rect_filled(rect, Rounding::ZERO, bg);
-                    if is_selected || is_hovered { ui.painter().line_segment([rect.left_top(), rect.left_bottom()], Stroke::new(1.0, ACCENT)); }
-                    
-                    if response.clicked() { new_selected = Some(idx); }
+
+                    // Left accent stripe
+                    if is_selected || is_hovered {
+                        ui.painter().line_segment(
+                            [rect.left_top(), rect.left_bottom()],
+                            Stroke::new(2.0, ACCENT),
+                        );
+                    }
+
+                    // Click / right-click
+                    if response.clicked()           { new_selected    = Some(idx); }
                     if response.secondary_clicked() { new_context_row = Some(idx); }
-                    
-                    let mut child_ui = ui.child_ui(rect, Layout::left_to_right(Align::Center), None);
-                    child_ui.add_space(8.0);
-                    
-                    let result = &self.results[idx];
-                    child_ui.add(Image::new(self.icons.get_for_path(ui.ctx(), &result.name, result.is_dir)).max_size(Vec2::new(14.0, 14.0)));
-                    child_ui.add_space(8.0);
-                    
-                    let (tag_rect, _) = child_ui.allocate_exact_size(Vec2::new(22.0, 14.0), Sense::hover());
-                    child_ui.painter().rect_stroke(tag_rect, 1.0, Stroke::new(1.0, BORDER2));
-                    child_ui.painter().text(tag_rect.center(), Align2::CENTER_CENTER, &result.drive[..2], FontId::new(9.0, FontFamily::Name("cond".into())), TEXT3);
-                    child_ui.add_space(6.0);
-                    
-                    child_ui.add_sized([260.0, 20.0], Label::new(RichText::new(&result.name).font(FontId::new(12.5, FontFamily::Name("mono".into()))).color(Color32::WHITE)).truncate());
-                    
-                    let remaining_w = child_ui.available_width();
-                    let path_w = remaining_w - 80.0 - 130.0 - 32.0;
-                    child_ui.add_sized([path_w, 20.0], Label::new(RichText::new(&result.full_path).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(Color32::WHITE)).truncate());
-                    
-                    child_ui.add_sized([80.0, 20.0], Label::new(RichText::new(format_size(result.size)).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(Color32::WHITE)));
-                    child_ui.add_sized([130.0, 20.0], Label::new(RichText::new(format_timestamp(result.timestamp)).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(Color32::WHITE)));
+
+                    // ── Row content — manual x positioning, fixed y centre ──────
+                    let y_center = rect.center().y;
+                    let mut x    = rect.left() + 8.0;
+
+                    // 1. File icon (14×14)
+                    let icon_rect = egui::Rect::from_min_size(
+                        Pos2::new(x, y_center - 7.0),
+                        Vec2::new(ICON_W, ICON_W),
+                    );
+                    let icon_src = self.icons.get_for_path(ui.ctx(), &result.name, result.is_dir);
+                    // We cannot use painter for images; use a child_ui scoped to just this rect
+                    ui.child_ui(icon_rect, Layout::left_to_right(Align::Min), None).add(
+                        Image::new(icon_src)
+                            .fit_to_exact_size(Vec2::new(ICON_W, ICON_W)),
+                    );
+                    x += ICON_W + 8.0;
+
+                    let painter = ui.painter();
+
+                    // 2. Drive tag (22×14 border box)
+                    let tag_rect = egui::Rect::from_min_size(
+                        Pos2::new(x, y_center - 7.0),
+                        Vec2::new(TAG_W, 14.0),
+                    );
+                    painter.rect_stroke(tag_rect, 1.0, Stroke::new(1.0, BORDER2));
+                    painter.text(
+                        tag_rect.center(),
+                        Align2::CENTER_CENTER,
+                        &result.drive[..2],
+                        FontId::new(9.0, FontFamily::Name("cond".into())),
+                        TEXT3,
+                    );
+                    x += TAG_W + 6.0;
+
+                    // Helper: draw a clipped left-aligned text string
+                    let draw_text = |painter: &egui::Painter,
+                                     text: &str,
+                                     col_x: f32,
+                                     col_w: f32,
+                                     font: FontId,
+                                     color: Color32| {
+                        let text_pos = Pos2::new(col_x, y_center);
+                        let clip_rect = egui::Rect::from_min_size(
+                            Pos2::new(col_x, rect.top()),
+                            Vec2::new(col_w, rect.height()),
+                        );
+                        painter.with_clip_rect(clip_rect).text(
+                            text_pos,
+                            Align2::LEFT_CENTER,   // ← LEFT-aligned, vertically centred
+                            text,
+                            font,
+                            color,
+                        );
+                    };
+
+                    // 3. File name
+                    draw_text(
+                        painter,
+                        &result.name,
+                        x, NAME_W,
+                        FontId::new(12.5, FontFamily::Name("mono".into())),
+                        TEXT,
+                    );
+                    x += NAME_W;
+
+                    // 4. Path
+                    draw_text(
+                        painter,
+                        &result.full_path,
+                        x, path_w,
+                        FontId::new(11.0, FontFamily::Name("mono".into())),
+                        TEXT3,
+                    );
+                    x += path_w;
+
+                    // 5. Size (right-aligned within its column)
+                    let size_str = if result.is_dir { "—".to_string() } else { format_size(result.size) };
+                    draw_text(
+                        painter,
+                        &size_str,
+                        x, SIZE_W,
+                        FontId::new(11.0, FontFamily::Name("mono".into())),
+                        TEXT2,
+                    );
+                    x += SIZE_W;
+
+                    // 6. Date
+                    draw_text(
+                        painter,
+                        &format_timestamp(result.timestamp),
+                        x, DATE_W,
+                        FontId::new(11.0, FontFamily::Name("mono".into())),
+                        TEXT3,
+                    );
                 }
             });
-        });
 
+        // ── Process deferred interactions ────────────────────────────────────
         if let Some(idx) = new_selected {
             let modifiers = ui.input(|i| i.modifiers);
             if modifiers.command {
@@ -931,24 +1051,36 @@ impl FerrexApp {
                 self.selected_rows.insert(idx);
             }
         }
-        
+
         if let Some(idx) = new_context_row { self.context_menu_row = Some(idx); }
-        if let Some(idx) = self.context_menu_row {
-            let result = self.results[idx].clone();
+        if let Some(row_idx) = self.context_menu_row {
+            let result = self.results[row_idx].clone();
             let mut close_menu = false;
             let menu_pos = ui.input(|i| i.pointer.interact_pos().unwrap_or_default());
-            Area::new(Id::new("ctx_menu")).fixed_pos(menu_pos).order(Order::Foreground).show(ui.ctx(), |ui| {
-                Frame::none().fill(PANEL).stroke(Stroke::new(1.0, BORDER2)).inner_margin(Margin::same(4.0)).show(ui, |ui| {
-                    ui.set_min_width(180.0);
-                    if menu_item(ui, "打开文件") { open_file(&result.full_path); close_menu = true; }
-                    if menu_item(ui, "在资源管理器中定位") { reveal_in_explorer(&result.full_path); close_menu = true; }
-                    if menu_item(ui, "复制路径") { ui.ctx().output_mut(|o| o.copied_text = result.full_path.clone()); close_menu = true; }
-                    if menu_item(ui, "复制文件名") { ui.ctx().output_mut(|o| o.copied_text = result.name.clone()); close_menu = true; }
-                    ui.separator();
-                    if menu_item(ui, "属性") { open_properties(&result.full_path); close_menu = true; }
+            Area::new(Id::new("ctx_menu"))
+                .fixed_pos(menu_pos)
+                .order(Order::Foreground)
+                .show(ui.ctx(), |ui| {
+                    Frame::none()
+                        .fill(PANEL)
+                        .stroke(Stroke::new(1.0, BORDER2))
+                        .inner_margin(Margin::same(4.0))
+                        .show(ui, |ui| {
+                            ui.set_min_width(180.0);
+                            if menu_item(ui, "打开文件")             { open_file(&result.full_path); close_menu = true; }
+                            if menu_item(ui, "在资源管理器中定位")    { reveal_in_explorer(&result.full_path); close_menu = true; }
+                            if menu_item(ui, "复制路径")              { ui.ctx().output_mut(|o| o.copied_text = result.full_path.clone()); close_menu = true; }
+                            if menu_item(ui, "复制文件名")            { ui.ctx().output_mut(|o| o.copied_text = result.name.clone()); close_menu = true; }
+                            ui.separator();
+                            if menu_item(ui, "属性")                  { open_properties(&result.full_path); close_menu = true; }
+                        });
                 });
-            });
-            if close_menu || (ui.input(|i| i.pointer.any_click()) && !ui.input(|i| i.pointer.secondary_down())) { self.context_menu_row = None; }
+            if close_menu
+                || (ui.input(|i| i.pointer.any_click())
+                    && !ui.input(|i| i.pointer.secondary_down()))
+            {
+                self.context_menu_row = None;
+            }
         }
     }
 
@@ -1035,13 +1167,16 @@ impl FerrexApp {
     }
 }
 
-fn header_label(ui: &mut egui::Ui, text: &str, width: f32) -> bool {
-    let (rect, response) = ui.allocate_at_least(Vec2::new(width, 20.0), Sense::click());
-    if ui.is_rect_visible(rect) {
-        let mut child_ui = ui.child_ui(rect, Layout::left_to_right(Align::Center), None);
-        let color = if response.hovered() { ACCENT } else { Color32::WHITE };
-        child_ui.add(Label::new(RichText::new(text).font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(color).extra_letter_spacing(1.5)));
-    }
+fn col_header_btn(ui: &mut egui::Ui, text: &str, width: f32) -> bool {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 22.0), Sense::click());
+    let color = if response.hovered() { ACCENT } else { TEXT3 };
+    ui.painter().text(
+        Pos2::new(rect.left(), rect.center().y),
+        Align2::LEFT_CENTER,
+        text,
+        FontId::new(10.0, FontFamily::Name("cond".into())),
+        color,
+    );
     response.clicked()
 }
 
