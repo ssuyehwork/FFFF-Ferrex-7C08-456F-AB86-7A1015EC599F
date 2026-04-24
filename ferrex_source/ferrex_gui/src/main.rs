@@ -924,16 +924,16 @@ impl FerrexApp {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 5.0;
                 ui.add_space(8.0);
-                ui.add(egui::Image::new(egui::include_image!("../icons/search.svg")).max_size(Vec2::splat(16.0)).tint(TEXT3));
+                ui.add(egui::Image::new(egui::include_image!("../icons/search.svg")).max_size(Vec2::splat(16.0)).tint(ACCENT));
                 let search_edit = TextEdit::singleline(&mut self.query).font(FontId::new(13.0, FontFamily::Name("mono".into()))).hint_text(RichText::new("文件名 / 关键词...").color(TEXT3)).frame(false).margin(Margin::symmetric(4.0, 8.0)).text_color(TEXT);
-                let search_w = ui.available_width() - 80.0 - 24.0 - 100.0;
+                let search_w = ui.available_width() - 80.0 - 24.0 - 100.0 - 5.0; // 减去 5 像素右间距
                 let search_response = ui.add_sized(Vec2::new(search_w, 34.0), search_edit);
                 let query_pop_id = ui.id().with("query_pop");
                 if ui.interact(search_response.rect, ui.id().with("search_hit"), Sense::click()).double_clicked() { ui.memory_mut(|m| m.open_popup(query_pop_id)); }
                 egui::popup_below_widget(ui, query_pop_id, &search_response, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| { self.draw_history_popup_content(ui, ctx, true, search_w); });
                 let (dot_rect, _) = ui.allocate_exact_size(Vec2::new(24.0, 34.0), Sense::hover());
                 ui.painter().rect_filled(dot_rect, Rounding::ZERO, BG3);
-                ui.painter().text(dot_rect.center(), Align2::CENTER_CENTER, ".", FontId::new(16.0, FontFamily::Name("mono".into())), ACCENT);
+                ui.painter().text(dot_rect.center(), Align2::CENTER_CENTER, "|", FontId::new(14.0, FontFamily::Name("mono".into())), TEXT3);
                 let ext_edit = TextEdit::singleline(&mut self.ext_filter).font(FontId::new(13.0, FontFamily::Name("mono".into()))).hint_text(RichText::new("扩展名").color(TEXT3)).frame(false).margin(Margin::symmetric(4.0, 8.0)).text_color(TEXT);
                 let ext_w = 80.0;
                 let ext_response = ui.add_sized(Vec2::new(ext_w, 34.0), ext_edit);
@@ -944,6 +944,7 @@ impl FerrexApp {
                 let trigger_search = ui.add_sized(Vec2::new(80.0, 34.0), search_btn).clicked() ||
                     (search_response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) ||
                     (ext_response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                ui.add_space(5.0);
                 if trigger_search {
                     if !self.query.is_empty() { self.config.query_history.retain(|h| h != &self.query); self.config.query_history.insert(0, self.query.clone()); if self.config.query_history.len() > 10 { self.config.query_history.truncate(10); } }
                     if !self.ext_filter.is_empty() { self.config.ext_history.retain(|h| h != &self.ext_filter); self.config.ext_history.insert(0, self.ext_filter.clone()); if self.config.ext_history.len() > 10 { self.config.ext_history.truncate(10); } }
@@ -1158,7 +1159,10 @@ fn stat_item(ui: &mut egui::Ui, label: &str, value: &str) {
 }
 
 fn menu_item(ui: &mut egui::Ui, label: &str) -> bool {
-    ui.add(egui::Button::new(RichText::new(label).font(FontId::new(11.0, FontFamily::Name("cond".into()))).color(TEXT2)).fill(Color32::TRANSPARENT)).clicked()
+    let button = egui::Button::new(RichText::new(label).font(FontId::new(11.0, FontFamily::Name("cond".into()))).color(TEXT2))
+        .fill(Color32::TRANSPARENT)
+        .rounding(Rounding::same(4.0));
+    ui.add(button).clicked()
 }
 
 fn open_file(path: &str) {
