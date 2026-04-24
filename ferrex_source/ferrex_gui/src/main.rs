@@ -1088,7 +1088,7 @@ fn open_properties(path: &str) {
 
 #[cfg(windows)]
 fn load_icon() -> Option<tray_icon::Icon> {
-    let icon_bytes = include_bytes!("../../ferrex.png");
+    let icon_bytes = include_bytes!("../../ferrex.ico");
     let image = image::load_from_memory(icon_bytes).ok()?.into_rgba8();
     let (width, height) = image.dimensions();
     let rgba = image.into_raw();
@@ -1193,7 +1193,7 @@ fn spawn_scan(vol: String, tx: std::sync::mpsc::Sender<ScanProgress>) {
 }
 
 fn main() -> eframe::Result<()> {
-    let icon_bytes = include_bytes!("../../ferrex.png");
+    let icon_bytes = include_bytes!("../../ferrex.ico");
     let icon = match image::load_from_memory(icon_bytes) {
         Ok(img) => {
             let rgba = img.into_rgba8();
