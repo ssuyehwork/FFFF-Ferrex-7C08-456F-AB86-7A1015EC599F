@@ -7,6 +7,7 @@ use egui::{
     Order, ViewportCommand, Id, Direction
 };
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::collections::{HashSet, HashMap};
 use std::process::Command;
 use std::time::{Instant, Duration};
@@ -175,6 +176,7 @@ struct FerrexApp {
     context_menu_row: Option<usize>,
     #[cfg(windows)]
     tray: Option<tray_icon::TrayIcon>,
+    should_exit: Arc<AtomicBool>,
     is_pinned: bool,
 }
 
@@ -209,6 +211,7 @@ impl FerrexApp {
             context_menu_row: None,
             #[cfg(windows)]
             tray: None,
+            should_exit: Arc::new(AtomicBool::new(false)),
             is_pinned: false,
         };
 
@@ -296,6 +299,7 @@ impl FerrexApp {
     fn setup_tray(&mut self, ctx: egui::Context) {
         use tray_icon::menu::{Menu, MenuItem, MenuId, MenuEvent};
         use tray_icon::TrayIconEvent;
+        let should_exit = self.should_exit.clone();
         let tray_menu = Menu::new();
         let show_i = MenuItem::with_id(MenuId::new("show_main"), "打开主界面", true, None);
         let quit_i = MenuItem::with_id(MenuId::new("quit"), "退出 Ferrex", true, None);
@@ -320,6 +324,7 @@ impl FerrexApp {
                             ctx.send_viewport_cmd(ViewportCommand::Visible(true));
                             ctx.send_viewport_cmd(ViewportCommand::Focus);
                         } else if event.id.0 == "quit" {
+                            should_exit.store(true, Ordering::SeqCst);
                             ctx.send_viewport_cmd(ViewportCommand::Close);
                         }
                     }
@@ -454,8 +459,12 @@ impl eframe::App for FerrexApp {
         self.handle_scan_progress();
 
         if ctx.input(|i| i.viewport().close_requested()) {
-            ctx.send_viewport_cmd(ViewportCommand::CancelClose);
-            ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+            if self.should_exit.load(Ordering::SeqCst) {
+                // 收到退出信号，不执行任何拦截，允许默认关闭行为
+            } else {
+                ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+                ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+            }
         }
 
         egui::TopBottomPanel::top("titlebar")
