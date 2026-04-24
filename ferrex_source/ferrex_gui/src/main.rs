@@ -3,8 +3,8 @@
 use eframe::egui;
 use egui::{
     Color32, RichText, FontId, FontFamily, Pos2, Vec2, Margin, Frame, Sense, Layout, 
-    Align, Align2, Stroke, Rounding, Image, TextEdit, ScrollArea, Area,
-    Order, ViewportCommand, Id, Direction
+    Align, Align2, Stroke, Rounding, Image, TextEdit, ScrollArea,
+    ViewportCommand, Direction
 };
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -264,7 +264,6 @@ struct FerrexApp {
     last_sys_poll: Instant,
     mem_usage_mb: f32,
     cpu_usage: f32,
-    context_menu_row: Option<usize>,
     #[cfg(windows)]
     tray: Option<tray_icon::TrayIcon>,
     should_exit: Arc<AtomicBool>,
@@ -313,7 +312,6 @@ impl FerrexApp {
             last_sys_poll: Instant::now(),
             mem_usage_mb: 0.0,
             cpu_usage: 0.0,
-            context_menu_row: None,
             #[cfg(windows)]
             tray: None,
             should_exit: Arc::new(AtomicBool::new(false)),
@@ -421,13 +419,10 @@ impl FerrexApp {
             let tray = tray_icon::TrayIconBuilder::new()
                 .with_tooltip("FERREX")
                 .with_icon(icon)
+                .with_menu(Box::new(tray_menu))         // 修复：直接绑定菜单
+                .with_menu_on_left_click(false)         // 修复：禁用左键菜单，确保左键点击用于唤醒
                 .build()
                 .ok();
-
-            if let Some(ref t) = tray {
-                #[cfg(target_os = "windows")]
-                t.set_menu(Some(Box::new(tray_menu)));
-            }
 
             self.tray = tray;
             
@@ -1015,6 +1010,15 @@ impl FerrexApp {
                 ui.painter().rect_filled(rect, Rounding::ZERO, bg);
                 if response.double_clicked() { open_file(&result.full_path); }
                 else if response.clicked() { new_selected = Some(idx); }
+                response.context_menu(|ui| {
+                    ui.set_min_width(180.0);
+                    if menu_item(ui, "打开文件") { open_file(&result.full_path); ui.close_menu(); }
+                    if menu_item(ui, "在资源管理器中定位") { reveal_in_explorer(&result.full_path); ui.close_menu(); }
+                    if menu_item(ui, "复制路径") { ui.ctx().output_mut(|o| o.copied_text = result.full_path.clone()); ui.close_menu(); }
+                    if menu_item(ui, "复制文件名") { ui.ctx().output_mut(|o| o.copied_text = result.name.clone()); ui.close_menu(); }
+                    ui.separator();
+                    if menu_item(ui, "属性") { open_properties(&result.full_path); ui.close_menu(); }
+                });
                 if response.secondary_clicked() { new_context_row = Some(idx); }
                 let y_center = rect.center().y;
                 let mut x = rect.left() + 8.0;
@@ -1053,30 +1057,9 @@ impl FerrexApp {
                     let (min, max) = if start < idx { (start, idx) } else { (idx, start) };
                     for i in min..=max { self.selected_rows.insert(i); }
                 } else { self.selected_rows.insert(idx); }
-            } else {
-                self.selected_rows.clear(); self.selected_rows.insert(idx); self.last_clicked_row = Some(idx);
             }
         }
-        if let Some(idx) = new_context_row { self.context_menu_row = Some(idx); }
-        if let Some(row_idx) = self.context_menu_row {
-            let result = self.results[row_idx].clone();
-            let mut close_menu = false;
-            let menu_pos = ui.input(|i| i.pointer.interact_pos().unwrap_or_default());
-            Area::new(Id::new("ctx_menu")).fixed_pos(menu_pos).order(Order::Foreground).show(ui.ctx(), |ui| {
-                Frame::none().fill(PANEL).stroke(Stroke::new(1.0, BORDER2)).inner_margin(Margin::same(4.0)).show(ui, |ui| {
-                    ui.set_min_width(180.0);
-                    if menu_item(ui, "打开文件") { open_file(&result.full_path); close_menu = true; }
-                    if menu_item(ui, "在资源管理器中定位") { reveal_in_explorer(&result.full_path); close_menu = true; }
-                    if menu_item(ui, "复制路径") { ui.ctx().output_mut(|o| o.copied_text = result.full_path.clone()); close_menu = true; }
-                    if menu_item(ui, "复制文件名") { ui.ctx().output_mut(|o| o.copied_text = result.name.clone()); close_menu = true; }
-                    ui.separator();
-                    if menu_item(ui, "属性") { open_properties(&result.full_path); close_menu = true; }
-                });
-            });
-            if close_menu || (ui.input(|i| i.pointer.any_click()) && !ui.input(|i| i.pointer.secondary_down())) { self.context_menu_row = None; }
-        }
     }
-
     fn draw_empty_state(&self, ui: &mut egui::Ui) {
         ui.vertical_centered(|ui| { ui.add_space(100.0); ui.label(RichText::new("无匹配结果").font(FontId::new(14.0, FontFamily::Name("cond".into()))).color(TEXT3)); });
     }
