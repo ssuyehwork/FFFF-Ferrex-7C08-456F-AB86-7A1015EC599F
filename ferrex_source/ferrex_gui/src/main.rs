@@ -343,7 +343,7 @@ impl FerrexApp {
         let show_id = MenuId::new("show_main");
         let quit_id = MenuId::new("quit");
         let show_i = MenuItem::with_id(show_id.clone(), "打开主界面", true, None);
-        let quit_i = MenuItem::with_id(quit_id.clone(), "退出 Ferrex", true, None);
+        let quit_i = MenuItem::with_id(quit_id.clone(), "退出 FERREX", true, None);
         let _ = tray_menu.append_items(&[&show_i, &quit_i]);
 
         if let Some(icon) = load_icon() {
@@ -378,8 +378,9 @@ impl FerrexApp {
                         }
                     }
                     while let Ok(event) = tray_rx.try_recv() {
+                        use tray_icon::{TrayIconEvent, MouseButton};
                         match event {
-                            TrayIconEvent::Click { .. } => {
+                            TrayIconEvent::Click { button: MouseButton::Left, .. } => {
                                 ctx.send_viewport_cmd(ViewportCommand::Visible(true));
                                 ctx.send_viewport_cmd(ViewportCommand::Focus);
                                 ctx.request_repaint();
@@ -842,7 +843,10 @@ impl FerrexApp {
                     .text_color(TEXT);
 
                 let search_response = ui.add_sized(Vec2::new(ui.available_width() - 80.0 - 24.0 - 100.0, 34.0), search_edit);
-                if search_response.double_clicked() { self.show_query_history = true; }
+                let search_rect = search_response.rect;
+                if ui.interact(search_rect, ui.id().with("search_hit"), Sense::click()).double_clicked() {
+                    self.show_query_history = true;
+                }
 
                 let (dot_rect, _) = ui.allocate_exact_size(Vec2::new(24.0, 34.0), Sense::hover());
                 ui.painter().rect_filled(dot_rect, Rounding::ZERO, BG3);
@@ -855,7 +859,10 @@ impl FerrexApp {
                     .margin(Margin::symmetric(4.0, 8.0))
                     .text_color(TEXT);
                 let ext_response = ui.add_sized(Vec2::new(80.0, 34.0), ext_edit);
-                if ext_response.double_clicked() { self.show_ext_history = true; }
+                let ext_rect = ext_response.rect;
+                if ui.interact(ext_rect, ui.id().with("ext_hit"), Sense::click()).double_clicked() {
+                    self.show_ext_history = true;
+                }
                 
                 let search_btn = egui::Button::new(RichText::new("搜索").font(FontId::new(13.0, FontFamily::Name("cond".into()))).color(Color32::BLACK).strong())
                     .fill(ACCENT)
