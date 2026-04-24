@@ -152,6 +152,7 @@ struct FerrexApp {
     stores: Vec<VolumeStore>,
     active_drives: HashSet<String>,
     ignored_drives: HashSet<String>,
+    default_drive: Option<String>,
     query: String,
     ext_filter: String,
     results: Vec<SearchResult>,
@@ -186,6 +187,7 @@ impl FerrexApp {
             stores: Vec::new(),
             active_drives: HashSet::new(),
             ignored_drives: HashSet::new(),
+            default_drive: None,
             query: String::new(),
             ext_filter: String::new(),
             results: Vec::new(),
@@ -251,6 +253,10 @@ impl FerrexApp {
 
     fn load_volumes(&mut self) {
         let volumes = get_ntfs_volumes();
+        if self.default_drive.is_none() && !volumes.is_empty() {
+            self.default_drive = Some(volumes[0].clone());
+        }
+
         for vol in volumes {
             if self.ignored_drives.contains(&vol) { continue; }
             if self.stores.iter().any(|s| s.drive == vol) { continue; }
@@ -612,6 +618,7 @@ impl FerrexApp {
     fn draw_drive_selector(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let mut toggle_drive = None;
         let mut ignore_drive = None;
+        let mut set_default = None;
 
         ui.horizontal_centered(|ui| {
             ui.label(RichText::new("DRIVES").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3));
@@ -626,17 +633,19 @@ impl FerrexApp {
             }
             ui.add_space(4.0);
             if ui.link(RichText::new("全清").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3)).clicked() {
-                if !self.stores.is_empty() && self.active_drives.len() > 1 {
-                    let first = self.stores[0].drive.clone();
+                if let Some(ref def) = self.default_drive {
                     self.active_drives.clear();
-                    self.active_drives.insert(first);
+                    self.active_drives.insert(def.clone());
                     self.run_search(ctx);
                 }
             }
             ui.add_space(8.0);
             for store in &self.stores {
                 let is_active = self.active_drives.contains(&store.drive);
-                let label = format!("{}:  {}", store.drive, format_count(store.record_count));
+                let is_default = self.default_drive.as_ref() == Some(&store.drive);
+                let label = if is_default { format!("★ {}:  {}", store.drive, format_count(store.record_count)) }
+                            else { format!("{}:  {}", store.drive, format_count(store.record_count)) };
+
                 let (bg, stroke_color, text_color) = if is_active { (Color32::from_rgba_unmultiplied(255, 140, 0, 30), ACCENT, ACCENT) } else { (BG3, BORDER2, TEXT2) };
 
                 let btn = egui::Button::new(RichText::new(&label).font(FontId::new(12.0, FontFamily::Name("cond".into()))).color(text_color))
@@ -651,7 +660,11 @@ impl FerrexApp {
 
                 let drive = store.drive.clone();
                 response.context_menu(|ui| {
-                    ui.set_min_width(120.0);
+                    ui.set_min_width(140.0);
+                    if menu_item(ui, "设为默认选项") {
+                        set_default = Some(drive.clone());
+                        ui.close_menu();
+                    }
                     if menu_item(ui, "忽略此驱动器") {
                         ignore_drive = Some(drive);
                         ui.close_menu();
@@ -680,9 +693,15 @@ impl FerrexApp {
                 });
                 ui.add_space(4.0);
             }
+            if let Some(drive) = set_default {
+                self.default_drive = Some(drive);
+            }
             if let Some(drive) = ignore_drive {
                 self.ignored_drives.insert(drive.clone());
                 self.active_drives.remove(&drive);
+                if self.default_drive.as_ref() == Some(&drive) {
+                    self.default_drive = self.stores.iter().find(|s| s.drive != drive).map(|s| s.drive.clone());
+                }
                 self.stores.retain(|s| s.drive != drive);
                 self.run_search(ctx);
             }
