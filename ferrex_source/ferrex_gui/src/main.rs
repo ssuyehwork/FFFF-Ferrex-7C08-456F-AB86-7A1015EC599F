@@ -14,7 +14,7 @@ use std::process::Command;
 use std::time::{Instant, Duration};
 use std::num::NonZeroUsize;
 
-use storage::{IndexStore, LoadedIndex, MappedIndex, pool_get_name, resolve_path};
+use storage::{IndexStore, LoadedIndex, MappedIndex, pool_get_name};
 use search::{Searcher, SearchOptions};
 use indexer::{UsnEvent, spawn_usn_watcher, get_ntfs_volumes};
 use lru::LruCache;
@@ -149,6 +149,13 @@ impl IconCache {
     }
 }
 
+struct OverlayEntry {
+    name: String,
+    parent_frn: u64,
+    flags: u32,
+    is_deleted: bool,
+}
+
 struct VolumeStore {
     drive: String,
     index: Arc<LoadedIndex>,
@@ -156,6 +163,43 @@ struct VolumeStore {
     path_cache: LruCache<u64, String>,
     usn_rx: Option<std::sync::mpsc::Receiver<UsnEvent>>,
     record_count: usize,
+    overlay: HashMap<u64, OverlayEntry>,
+}
+
+impl VolumeStore {
+    /// 实时路径解析：优先使用覆盖层数据进行向上溯源
+    fn resolve_live_path(&mut self, frn: u64) -> String {
+        if let Some(cached) = self.path_cache.get(&frn) {
+            return cached.clone();
+        }
+
+        let mut parts = Vec::new();
+        let mut current_frn = frn;
+
+        loop {
+            let (name, parent) = if let Some(entry) = self.overlay.get(&current_frn) {
+                if entry.is_deleted { break; }
+                (entry.name.clone(), entry.parent_frn)
+            } else if let Some(&idx) = self.frn_map.get(&current_frn) {
+                let n = pool_get_name(&self.index.string_pool, self.index.name_offsets[idx as usize] as usize);
+                (n, self.index.parent_frns[idx as usize])
+            } else {
+                break;
+            };
+
+            parts.push(name);
+
+            if current_frn == 5 || parent == 0 || current_frn == parent {
+                break;
+            }
+            current_frn = parent;
+        }
+
+        parts.reverse();
+        let path = format!("{}:\\{}", self.drive, parts.join("\\"));
+        self.path_cache.put(frn, path.clone());
+        path
+    }
 }
 
 #[derive(Clone)]
@@ -277,7 +321,9 @@ impl FerrexApp {
                 cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
             }
             if let Ok(output) = cmd.output() {
-                let text = String::from_utf8_lossy(&output.stdout);
+                // 修复：Windows 下 wmic 输出为 UTF-16LE，需过滤 Null 字节及乱码符号
+                let raw_text = String::from_utf8_lossy(&output.stdout);
+                let text = raw_text.replace('\0', "").replace('\u{FFFD}', "");
                 for line in text.lines().skip(1) {
                     let id = line.trim();
                     if !id.is_empty() && whitelist.iter().any(|&w| w.eq_ignore_ascii_case(id)) {
@@ -324,6 +370,7 @@ impl FerrexApp {
                     frn_map,
                     path_cache: LruCache::new(NonZeroUsize::new(10000).expect("Capacity is non-zero")),
                     usn_rx,
+                    overlay: HashMap::new(),
                 });
             } else {
                 let (tx, rx) = std::sync::mpsc::channel();
@@ -406,10 +453,40 @@ impl FerrexApp {
             if let Some(ref rx) = store.usn_rx {
                 while let Ok(event) = rx.try_recv() {
                     match event {
-                        UsnEvent::Renamed { old_frn, .. } | UsnEvent::Modified { frn: old_frn } => {
-                            store.path_cache.pop(&old_frn);
+                        UsnEvent::Created { frn, parent_frn, name, flags } => {
+                            store.overlay.insert(frn, OverlayEntry { name, parent_frn, flags, is_deleted: false });
+                            store.path_cache.pop(&frn);
                         }
-                        _ => {}
+                        UsnEvent::Deleted { frn } => {
+                            if let Some(entry) = store.overlay.get_mut(&frn) {
+                                entry.is_deleted = true;
+                            } else {
+                                // 针对静态索引中的项，标记删除
+                                store.overlay.insert(frn, OverlayEntry {
+                                    name: String::new(), parent_frn: 0, flags: 0, is_deleted: true
+                                });
+                            }
+                            store.path_cache.pop(&frn);
+                        }
+                        UsnEvent::Renamed { old_frn, new_name, new_parent_frn } => {
+                            // 获取现有 flags
+                            let flags = if let Some(entry) = store.overlay.get(&old_frn) {
+                                entry.flags
+                            } else if let Some(&idx) = store.frn_map.get(&old_frn) {
+                                store.index.flags[idx as usize]
+                            } else { 0 };
+
+                            store.overlay.insert(old_frn, OverlayEntry {
+                                name: new_name,
+                                parent_frn: new_parent_frn,
+                                flags,
+                                is_deleted: false
+                            });
+                            store.path_cache.clear(); // 重命名可能影响下游所有子路径，清理缓存
+                        }
+                        UsnEvent::Modified { frn } => {
+                            store.path_cache.pop(&frn);
+                        }
                     }
                 }
             }
@@ -430,18 +507,22 @@ impl FerrexApp {
         let mut all_results = Vec::new();
         for store in self.stores.iter_mut() {
             if !self.active_drives.contains(&store.drive) { continue; }
+
+            // 1. 静态索引搜索
             let searcher = Searcher::new(
                 &store.index.frns, &store.index.parent_frns, &store.index.sizes, 
                 &store.index.timestamps, &store.index.flags, &store.index.name_offsets, 
                 &store.index.string_pool
             );
             let matches = searcher.search(&opts);
-            for rec_idx in matches.into_iter().take(5000) {
+            for rec_idx in matches {
+                let frn = store.index.frns[rec_idx];
+
+                // 过滤掉已经在覆盖层中被删除或修改的记录
+                if store.overlay.contains_key(&frn) { continue; }
+
                 let name = pool_get_name(&store.index.string_pool, store.index.name_offsets[rec_idx] as usize);
-                let full_path = resolve_path(
-                    &store.drive, rec_idx as u32, &store.index.frns, &store.index.parent_frns, 
-                    &store.index.name_offsets, &store.index.string_pool, &store.frn_map, &mut store.path_cache
-                );
+                let full_path = store.resolve_live_path(frn);
                 
                 self.icons.get_for_path(ctx, &name, store.index.flags[rec_idx] & 0x10 != 0);
 
@@ -455,6 +536,30 @@ impl FerrexApp {
                 });
                 if all_results.len() >= 5000 { break; }
             }
+
+            // 2. 覆盖层（实时变更）搜索
+            if all_results.len() < 5000 {
+                // 需要先收集必要信息以避免在迭代时借用冲突
+                let candidates: Vec<(u64, String, u32)> = store.overlay.iter()
+                    .filter(|(_, e)| !e.is_deleted && matches_overlay_entry(e, &opts))
+                    .map(|(&f, e)| (f, e.name.clone(), e.flags))
+                    .collect();
+
+                for (frn, name, flags) in candidates {
+                    let full_path = store.resolve_live_path(frn);
+                    self.icons.get_for_path(ctx, &name, flags & 0x10 != 0);
+
+                    all_results.push(SearchResult {
+                        drive: store.drive.clone(),
+                        name,
+                        full_path,
+                        size: 0,
+                        timestamp: Instant::now().elapsed().as_secs(),
+                        is_dir: flags & 0x10 != 0,
+                    });
+                    if all_results.len() >= 5000 { break; }
+                }
+            }
             if all_results.len() >= 5000 { break; }
         }
 
@@ -463,11 +568,13 @@ impl FerrexApp {
         self.last_search_ms = t0.elapsed().as_secs_f64() * 1000.0;
     }
 
+
     fn apply_sort(&mut self) {
         let asc = self.sort_asc;
         match self.sort_col {
-            SortColumn::Name => self.results.sort_by(|a, b| { let c = a.name.to_lowercase().cmp(&b.name.to_lowercase()); if asc { c } else { c.reverse() } }),
-            SortColumn::Path => self.results.sort_by(|a, b| { let c = a.full_path.to_lowercase().cmp(&b.full_path.to_lowercase()); if asc { c } else { c.reverse() } }),
+            // 优化：避免在排序闭包中进行堆内存分配 (to_lowercase)，使用忽略大小写的 ASCII 对比
+            SortColumn::Name => self.results.sort_by(|a, b| { let c = cmp_ignore_ascii_case(&a.name, &b.name); if asc { c } else { c.reverse() } }),
+            SortColumn::Path => self.results.sort_by(|a, b| { let c = cmp_ignore_ascii_case(&a.full_path, &b.full_path); if asc { c } else { c.reverse() } }),
             SortColumn::Size => self.results.sort_by(|a, b| { let c = a.size.cmp(&b.size); if asc { c } else { c.reverse() } }),
             SortColumn::Date => self.results.sort_by(|a, b| { let c = a.timestamp.cmp(&b.timestamp); if asc { c } else { c.reverse() } }),
         }
@@ -484,7 +591,8 @@ impl FerrexApp {
                 let mut content = String::from("名称,路径,大小(字节),修改时间,类型\n");
                 for &idx in &self.selected_rows {
                     if let Some(r) = self.results.get(idx) {
-                        content.push_str(&format!("{},{},{},{},{}\n",
+                        // 修复：增加 CSV 字段转义（双引号），防止路径中的逗号破坏表格格式
+                        content.push_str(&format!("\"{}\",\"{}\",{},{},{}\n",
                             r.name, r.full_path, r.size,
                             format_timestamp(r.timestamp),
                             if r.is_dir { "目录" } else { "文件" }));
@@ -1006,7 +1114,7 @@ impl FerrexApp {
         let mut new_selected:    Option<usize> = None;
 
         let available_width  = ui.available_width();
-        let results_to_show  = self.results.len().min(200);
+        let results_total    = self.results.len();
 
         // Fixed column widths — must add up to less than available_width
         const ICON_W:   f32 = 14.0;
@@ -1018,12 +1126,13 @@ impl FerrexApp {
         // PATH gets whatever is left
         let path_w = (available_width - ICON_W - TAG_W - NAME_W - SIZE_W - DATE_W - PADDING).max(40.0);
 
+        // 修复：使用 show_rows 实现虚拟化滚动，消除 200 条渲染截断并提升大数据量下的性能
         ScrollArea::vertical()
             .auto_shrink([false, false])
-            .show(ui, |ui| {
+            .show_rows(ui, 30.0, results_total, |ui, row_range| {
                 ui.spacing_mut().item_spacing.y = 0.0;
 
-                for idx in 0..results_to_show {
+                for idx in row_range {
                     let result      = self.results[idx].clone();
 
                     // Allocate the full-width row rect
@@ -1391,7 +1500,8 @@ fn format_count(n: usize) -> String {
 }
 
 fn format_size(bytes: u64) -> String { 
-    if bytes == 0 { return "—".to_string(); } 
+    // 修复：0 字节明确显示为 "0 B"，以区分于目录（显示为 "—"）
+    if bytes == 0 { return "0 B".to_string(); }
     const UNITS: &[&str] = &["B", "KB", "MB", "GB"]; 
     let mut size = bytes as f64; 
     let mut unit = 0; 
@@ -1402,11 +1512,38 @@ fn format_size(bytes: u64) -> String {
 fn format_timestamp(ts: u64) -> String { 
     if ts == 0 { return "—".to_string(); } 
     let secs = (ts / 10_000_000) as i64 - 11644473600; 
-    use chrono::{TimeZone, Utc};
-    if let Some(dt) = Utc.timestamp_opt(secs, 0).single() {
+    // 修复：改用 Local 时区显示，解决中国用户（+8区）显示时间偏早 8 小时的问题
+    use chrono::{TimeZone, Local};
+    if let Some(dt) = Local.timestamp_opt(secs, 0).single() {
         return dt.format("%Y-%m-%d %H:%M").to_string();
     }
     "—".to_string() 
+}
+
+/// 辅助函数：实现无堆分配的 ASCII 大小写不敏感对比
+fn cmp_ignore_ascii_case(a: &str, b: &str) -> std::cmp::Ordering {
+    a.as_bytes().iter().map(|b| b.to_ascii_lowercase())
+     .cmp(b.as_bytes().iter().map(|b| b.to_ascii_lowercase()))
+}
+
+fn matches_overlay_entry(entry: &OverlayEntry, opts: &SearchOptions) -> bool {
+    if entry.name.is_empty() { return false; }
+
+    let is_dir = entry.flags & 0x10 != 0;
+    if is_dir && !opts.include_dirs { return false; }
+
+    if let Some(ext) = opts.ext_filter {
+        if !entry.name.to_lowercase().ends_with(&format!(".{}", ext.to_lowercase())) {
+            return false;
+        }
+    }
+
+    if !opts.query.is_empty() {
+        if !entry.name.to_lowercase().contains(&opts.query.to_lowercase()) {
+            return false;
+        }
+    }
+    true
 }
 
 
