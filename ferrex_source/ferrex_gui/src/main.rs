@@ -203,14 +203,21 @@ struct FerrexApp {
     tray: Option<tray_icon::TrayIcon>,
     should_exit: Arc<AtomicBool>,
     is_pinned: bool,
-    show_query_history: bool,
-    show_ext_history: bool,
 }
 
 impl FerrexApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         setup_fonts(&cc.egui_ctx);
         egui_extras::install_image_loaders(&cc.egui_ctx);
+
+        let mut visuals = egui::Visuals::dark();
+        visuals.window_fill = PANEL;
+        visuals.panel_fill = PANEL;
+        visuals.widgets.active.bg_fill = BG3;
+        visuals.widgets.hovered.bg_fill = BG3;
+        visuals.widgets.noninteractive.bg_fill = PANEL;
+        visuals.menu_rounding = Rounding::same(4.0);
+        cc.egui_ctx.set_visuals(visuals);
         
         let _ = indexer::acquire_privileges();
         let config = AppConfig::load();
@@ -241,8 +248,6 @@ impl FerrexApp {
             tray: None,
             should_exit: Arc::new(AtomicBool::new(false)),
             is_pinned: false,
-            show_query_history: false,
-            show_ext_history: false,
         };
 
         app.hardware_ok = app.verify_hardware_wmi();
@@ -348,19 +353,22 @@ impl FerrexApp {
 
         if let Some(icon) = load_icon() {
             let tray = tray_icon::TrayIconBuilder::new()
-                .with_menu(Box::new(tray_menu))
                 .with_tooltip("FERREX")
                 .with_icon(icon)
                 .build()
                 .ok();
+
+            if let Some(ref t) = tray {
+                #[cfg(target_os = "windows")]
+                t.set_menu(Some(Box::new(tray_menu)));
+            }
+
             self.tray = tray;
             
-            // 后台监听线程，解决窗口隐藏时 update 停止导致的点击无响应问题
             std::thread::spawn(move || {
                 let menu_rx = MenuEvent::receiver();
                 let tray_rx = TrayIconEvent::receiver();
                 loop {
-                    // 使用 while let 处理所有积压事件
                     while let Ok(event) = menu_rx.try_recv() {
                         if event.id == show_id {
                             ctx.send_viewport_cmd(ViewportCommand::Visible(true));
@@ -370,7 +378,6 @@ impl FerrexApp {
                             should_exit.store(true, Ordering::SeqCst);
                             ctx.send_viewport_cmd(ViewportCommand::Close);
                             ctx.request_repaint();
-                            // 保底退出逻辑：如果 1 秒后主线程没退，强行杀掉进程
                             std::thread::spawn(|| {
                                 std::thread::sleep(std::time::Duration::from_secs(1));
                                 std::process::exit(0);
@@ -843,10 +850,13 @@ impl FerrexApp {
                     .text_color(TEXT);
 
                 let search_response = ui.add_sized(Vec2::new(ui.available_width() - 80.0 - 24.0 - 100.0, 34.0), search_edit);
-                let search_rect = search_response.rect;
-                if ui.interact(search_rect, ui.id().with("search_hit"), Sense::click()).double_clicked() {
-                    self.show_query_history = true;
+                let query_pop_id = ui.id().with("query_pop");
+                if ui.interact(search_response.rect, ui.id().with("search_hit"), Sense::click()).double_clicked() {
+                    ui.memory_mut(|m| m.open_popup(query_pop_id));
                 }
+                egui::popup_below_widget(ui, query_pop_id, &search_response, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
+                    self.draw_history_popup_content(ui, ctx, true);
+                });
 
                 let (dot_rect, _) = ui.allocate_exact_size(Vec2::new(24.0, 34.0), Sense::hover());
                 ui.painter().rect_filled(dot_rect, Rounding::ZERO, BG3);
@@ -859,10 +869,13 @@ impl FerrexApp {
                     .margin(Margin::symmetric(4.0, 8.0))
                     .text_color(TEXT);
                 let ext_response = ui.add_sized(Vec2::new(80.0, 34.0), ext_edit);
-                let ext_rect = ext_response.rect;
-                if ui.interact(ext_rect, ui.id().with("ext_hit"), Sense::click()).double_clicked() {
-                    self.show_ext_history = true;
+                let ext_pop_id = ui.id().with("ext_pop");
+                if ui.interact(ext_response.rect, ui.id().with("ext_hit"), Sense::click()).double_clicked() {
+                    ui.memory_mut(|m| m.open_popup(ext_pop_id));
                 }
+                egui::popup_below_widget(ui, ext_pop_id, &ext_response, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
+                    self.draw_history_popup_content(ui, ctx, false);
+                });
                 
                 let search_btn = egui::Button::new(RichText::new("搜索").font(FontId::new(13.0, FontFamily::Name("cond".into()))).color(Color32::BLACK).strong())
                     .fill(ACCENT)
@@ -887,73 +900,60 @@ impl FerrexApp {
                     self.run_search(ctx); 
                 }
 
-                if self.show_query_history {
-                    self.draw_history_popup(ui, ctx, search_response.rect.left_bottom(), true);
-                }
-                if self.show_ext_history {
-                    self.draw_history_popup(ui, ctx, ext_response.rect.left_bottom(), false);
-                }
             });
         });
     }
 
-    fn draw_history_popup(&mut self, _ui: &egui::Ui, ctx: &egui::Context, pos: Pos2, is_query: bool) {
-        let id = if is_query { Id::new("query_hist") } else { Id::new("ext_hist") };
-
-        let mut close = false;
+    fn draw_history_popup_content(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, is_query: bool) {
         let mut history_to_clear = false;
         let mut to_remove = None;
         let mut selected_item = None;
 
-        Area::new(id).fixed_pos(pos).order(Order::Foreground).show(ctx, |ui| {
-            Frame::none().fill(PANEL).stroke(Stroke::new(1.0, BORDER2)).rounding(Rounding::same(4.0)).inner_margin(Margin::same(8.0)).show(ui, |ui| {
-                ui.set_width(if is_query { 300.0 } else { 120.0 });
-                ui.horizontal(|ui| {
-                    ui.add(egui::Image::new(egui::include_image!("../icons/restore.svg")).max_size(Vec2::splat(12.0)).tint(TEXT3));
-                    ui.label(RichText::new("搜索历史").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3));
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.link(RichText::new("清空").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3)).clicked() {
-                            history_to_clear = true;
-                        }
-                    });
-                });
-                ui.add_space(4.0);
-
-                let history = if is_query { &self.config.query_history } else { &self.config.ext_history };
-                for (idx, item) in history.iter().enumerate() {
-                    let (rect, resp) = ui.allocate_at_least(Vec2::new(ui.available_width(), 24.0), Sense::click());
-                    if resp.hovered() { ui.painter().rect_filled(rect, Rounding::same(4.0), BG3); }
-
-                    ui.painter().text(Pos2::new(rect.left() + 8.0, rect.center().y), Align2::LEFT_CENTER, item, FontId::new(12.0, FontFamily::Monospace), Color32::WHITE);
-
-                    let del_rect = egui::Rect::from_center_size(Pos2::new(rect.right() - 12.0, rect.center().y), Vec2::splat(16.0));
-                    let del_resp = ui.interact(del_rect, id.with(idx), Sense::click());
-                    let del_color = if del_resp.hovered() { DANGER } else { TEXT3 };
-                    ui.painter().text(del_rect.center(), Align2::CENTER_CENTER, "×", FontId::new(14.0, FontFamily::Monospace), del_color);
-
-                    if del_resp.clicked() { to_remove = Some(idx); }
-                    else if resp.clicked() {
-                        selected_item = Some(item.clone());
-                        close = true;
+        Frame::none().fill(PANEL).inner_margin(Margin::same(8.0)).show(ui, |ui| {
+            ui.set_width(if is_query { 300.0 } else { 120.0 });
+            ui.horizontal(|ui| {
+                ui.add(egui::Image::new(egui::include_image!("../icons/restore.svg")).max_size(Vec2::splat(12.0)).tint(TEXT3));
+                ui.label(RichText::new("搜索历史").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.link(RichText::new("清空").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3)).clicked() {
+                        history_to_clear = true;
                     }
-                }
-                if ui.input(|i| i.pointer.any_click()) && !resp_contains_pointer(ui, ctx) { close = true; }
+                });
             });
+            ui.add_space(4.0);
+
+            let history = if is_query { &self.config.query_history } else { &self.config.ext_history };
+            for (idx, item) in history.iter().enumerate() {
+                let (rect, resp) = ui.allocate_at_least(Vec2::new(ui.available_width(), 24.0), Sense::click());
+                if resp.hovered() { ui.painter().rect_filled(rect, Rounding::same(4.0), BG3); }
+
+                ui.painter().text(Pos2::new(rect.left() + 8.0, rect.center().y), Align2::LEFT_CENTER, item, FontId::new(12.0, FontFamily::Monospace), Color32::WHITE);
+
+                let del_rect = egui::Rect::from_center_size(Pos2::new(rect.right() - 12.0, rect.center().y), Vec2::splat(16.0));
+                let del_resp = ui.interact(del_rect, ui.id().with(idx), Sense::click());
+                let del_color = if del_resp.hovered() { DANGER } else { TEXT3 };
+                ui.painter().text(del_rect.center(), Align2::CENTER_CENTER, "×", FontId::new(14.0, FontFamily::Monospace), del_color);
+
+                if del_resp.clicked() { to_remove = Some(idx); }
+                else if resp.clicked() {
+                    selected_item = Some(item.clone());
+                    ui.memory_mut(|m| m.close_popup());
+                }
+            }
         });
 
-        let mut save_config = false;
+        let mut save_needed = false;
         {
             let history = if is_query { &mut self.config.query_history } else { &mut self.config.ext_history };
-            if history_to_clear { history.clear(); save_config = true; }
-            if let Some(i) = to_remove { history.remove(i); save_config = true; }
+            if history_to_clear { history.clear(); save_needed = true; }
+            if let Some(i) = to_remove { history.remove(i); save_needed = true; }
         }
-        if save_config { self.config.save(); }
+        if save_needed { self.config.save(); }
+
         if let Some(item) = selected_item {
             if is_query { self.query = item; } else { self.ext_filter = item; }
             self.run_search(ctx);
         }
-
-        if close { if is_query { self.show_query_history = false; } else { self.show_ext_history = false; } }
     }
 
     fn draw_column_header(&mut self, ui: &mut egui::Ui) {
@@ -1270,11 +1270,6 @@ fn col_header_btn(ui: &mut egui::Ui, text: &str, width: f32, right_align: bool) 
     response.clicked()
 }
 
-fn resp_contains_pointer(ui: &egui::Ui, ctx: &egui::Context) -> bool {
-    if let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) {
-        ui.min_rect().contains(pos)
-    } else { false }
-}
 
 fn stat_item(ui: &mut egui::Ui, label: &str, value: &str) { 
     ui.label(RichText::new(label).font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3)); 
