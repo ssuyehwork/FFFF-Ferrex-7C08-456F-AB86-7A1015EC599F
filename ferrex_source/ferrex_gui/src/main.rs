@@ -96,7 +96,7 @@ impl IconCache {
             return (&self.textures[&cache_key]).into();
         }
 
-        egui::include_image!("../../ferrex.png") // Fallback
+        egui::include_image!("../../ferrex.ico") // Fallback
     }
 
     fn load_system_icon(&self, ctx: &egui::Context, path: &str, is_dir: bool) -> Option<egui::TextureHandle> {
@@ -250,8 +250,8 @@ enum ScanProgress {
 
 struct FerrexApp {
     stores: Vec<VolumeStore>,
-    active_drives: HashSet<String>,
     config: AppConfig,
+    hardware_ok: Arc<AtomicBool>,
     query: String,
     ext_filter: String,
     results: Vec<SearchResult>,
@@ -267,7 +267,6 @@ struct FerrexApp {
     scan_tx: std::sync::mpsc::Sender<ScanProgress>,
     scan_rx: std::sync::mpsc::Receiver<ScanProgress>,
     active_scan_count: usize,
-    hardware_ok: bool,
     sysinfo: System,
     last_sys_poll: Instant,
     mem_usage_mb: f32,
@@ -296,10 +295,13 @@ impl FerrexApp {
         let config = AppConfig::load();
         let (scan_tx, scan_rx) = std::sync::mpsc::channel();
 
+        let hardware_ok = Arc::new(AtomicBool::new(false));
+        let hardware_ok_clone = hardware_ok.clone();
+
         let mut app = Self {
             stores: Vec::new(),
-            active_drives: config.active_drives.clone(),
             config,
+            hardware_ok,
             query: String::new(),
             ext_filter: String::new(),
             results: Vec::new(),
@@ -309,13 +311,12 @@ impl FerrexApp {
             sort_col: SortColumn::Name,
             sort_asc: true,
             icons: IconCache::new(),
-            status_text: "准备就绪".to_string(),
+            status_text: "正在校验硬件...".to_string(),
             is_scanning: false,
             scan_progress: 0.0,
             scan_tx,
             scan_rx,
             active_scan_count: 0,
-            hardware_ok: false,
             // 修复：取消 System::new_all()，防止程序启动时白屏卡顿数秒
             sysinfo: System::new(),
             last_sys_poll: Instant::now(),
@@ -327,43 +328,23 @@ impl FerrexApp {
             is_pinned: false,
         };
 
-        app.hardware_ok = app.verify_hardware_wmi();
-        if app.hardware_ok {
-            app.load_volumes();
-            #[cfg(windows)]
-            app.setup_tray(cc.egui_ctx.clone());
-        }
+        let ctx = cc.egui_ctx.clone();
+        std::thread::spawn(move || {
+            if verify_hardware_wmi_static() {
+                hardware_ok_clone.store(true, Ordering::SeqCst);
+            } else {
+                // 如果需要记录校验失败的状态，可以在这里处理
+            }
+            ctx.request_repaint();
+        });
+
+        app.load_volumes();
+        #[cfg(windows)]
+        app.setup_tray(cc.egui_ctx.clone());
 
         app
     }
 
-    fn verify_hardware_wmi(&self) -> bool {
-        let whitelist =[
-            "BFEBFBFF000306C3", "SGH412RF00", "494000PA0D9L",
-            "PHYS825203NX480BGN", "NA5360WJ", "NA7G89GQ", "03000210052122072519"
-        ];
-        let cmds =["cpu get processorid", "baseboard get serialnumber", "bios get serialnumber"];
-        for cmd_args in cmds {
-            let mut cmd = Command::new("wmic");
-            cmd.args(cmd_args.split_whitespace());
-            #[cfg(windows)]
-            {
-                use std::os::windows::process::CommandExt;
-                cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-            }
-            if let Ok(output) = cmd.output() {
-                let raw_text = String::from_utf8_lossy(&output.stdout);
-                let text = raw_text.replace('\0', "").replace('\u{FFFD}', ""); 
-                for line in text.lines().skip(1) {
-                    let id = line.trim();
-                    if !id.is_empty() && whitelist.iter().any(|&w| w.eq_ignore_ascii_case(id)) {
-                        return true;
-                    }
-                }
-            }
-        }
-        false 
-    }
 
     fn load_volumes(&mut self) {
         let volumes = get_ntfs_volumes();
@@ -372,7 +353,6 @@ impl FerrexApp {
             for vol in &volumes {
                 if !self.config.ignored_drives.contains(vol) {
                     self.config.active_drives.insert(vol.clone());
-                    self.active_drives.insert(vol.clone());
                 }
             }
             if self.config.default_drives.is_empty() && !volumes.is_empty() {
@@ -544,7 +524,7 @@ impl FerrexApp {
 
         let mut all_results = Vec::new();
         for store in self.stores.iter_mut() {
-            if !self.active_drives.contains(&store.drive) { continue; }
+            if !self.config.active_drives.contains(&store.drive) { continue; }
             
             let searcher = Searcher::new(
                 &store.index.frns, &store.index.parent_frns, &store.index.sizes, 
@@ -641,7 +621,7 @@ impl eframe::App for FerrexApp {
         // 修复：强制 200ms 刷新一次，确保 USN 积压数据能被及时抽出，防止 OOM 假死
         ctx.request_repaint_after(Duration::from_millis(200));
 
-        if !self.hardware_ok {
+        if !self.hardware_ok.load(Ordering::SeqCst) {
             self.show_lock_screen(ctx);
             return;
         }
@@ -700,14 +680,12 @@ impl FerrexApp {
     fn show_lock_screen(&self, ctx: &egui::Context) {
         egui::CentralPanel::default().frame(Frame::none().fill(BG)).show(ctx, |ui| {
             ui.vertical_centered(|ui| {
-                ui.add_space(ui.available_height() / 2.0 - 60.0);
+                ui.add_space(ui.available_height() / 2.0 - 100.0);
+                ui.add(egui::Image::new(egui::include_image!("../icons/warning.svg")).max_size(Vec2::splat(64.0)).tint(DANGER));
+                ui.add_space(20.0);
                 ui.label(RichText::new("未授权的硬件设备").font(FontId::new(24.0, FontFamily::Name("cond".into()))).color(DANGER).strong());
                 ui.add_space(8.0);
                 ui.label(RichText::new("请联系开发者以获取授权").font(FontId::new(14.0, FontFamily::Name("mono".into()))).color(TEXT3));
-                ui.add_space(20.0);
-                let (rect, _) = ui.allocate_exact_size(Vec2::new(64.0, 64.0), Sense::hover());
-                ui.painter().rect_stroke(rect, 8.0, Stroke::new(2.0, DANGER));
-                ui.painter().circle_stroke(rect.center() - Vec2::new(0.0, 10.0), 12.0, Stroke::new(2.0, DANGER));
             });
         });
     }
@@ -715,13 +693,13 @@ impl FerrexApp {
     fn draw_titlebar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_centered(|ui| {
             ui.add_space(8.0);
-            ui.add(egui::Image::new(egui::include_image!("../../ferrex.png")).max_size(Vec2::new(18.0, 18.0)));
+            ui.add(egui::Image::new(egui::include_image!("../../ferrex.ico")).max_size(Vec2::new(18.0, 18.0)));
             ui.add_space(8.0);
             ui.label(RichText::new("FERREX").font(FontId::new(14.0, FontFamily::Name("cond".into()))).color(ACCENT).extra_letter_spacing(1.5));
             ui.add_space(12.0);
             
             let total_records: usize = self.stores.iter().map(|s| s.record_count).sum();
-            ui.label(RichText::new(format!("READY — {}", format_number(total_records))).font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(SUCCESS));
+            ui.label(RichText::new(format!("READY - {}", format_number(total_records))).font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(SUCCESS));
 
             let drag_rect = ui.available_rect_before_wrap();
             let drag_response = ui.interact(drag_rect, ui.id().with("drag"), Sense::click_and_drag());
@@ -828,25 +806,23 @@ impl FerrexApp {
                 response
             };
             if draw_action_btn(ui, "全选").clicked() {
-                for store in &self.stores { self.active_drives.insert(store.drive.clone()); }
-                self.config.active_drives = self.active_drives.clone();
+                for store in &self.stores { self.config.active_drives.insert(store.drive.clone()); }
                 self.config.save();
                 self.run_search(ctx);
             }
             ui.add_space(4.0);
             if draw_action_btn(ui, "全清").clicked() {
-                self.active_drives.clear();
-                for def in &self.config.default_drives { self.active_drives.insert(def.clone()); }
-                self.config.active_drives = self.active_drives.clone();
+                self.config.active_drives.clear();
+                for def in &self.config.default_drives { self.config.active_drives.insert(def.clone()); }
                 self.config.save();
                 self.run_search(ctx);
             }
             ui.add_space(8.0);
             ScrollArea::horizontal().show(ui, |ui| {
                 for store in &self.stores {
-                    let is_active = self.active_drives.contains(&store.drive);
+                    let is_active = self.config.active_drives.contains(&store.drive);
                     let is_default = self.config.default_drives.contains(&store.drive);
-                    let label = if is_default { format!("★ {}:  {}", store.drive, format_count(store.record_count)) } 
+                    let label = if is_default { format!("[默认] {}:  {}", store.drive, format_count(store.record_count)) }
                                 else { format!("{}:  {}", store.drive, format_count(store.record_count)) };
                     let (bg, stroke_color, text_color) = if is_active { (Color32::from_rgba_unmultiplied(255, 140, 0, 30), ACCENT, ACCENT) } else { (BG3, BORDER2, TEXT2) };
                     let btn = egui::Button::new(RichText::new(&label).font(FontId::new(12.0, FontFamily::Name("cond".into()))).color(text_color)).fill(bg).stroke(Stroke::new(1.0, stroke_color)).rounding(Rounding::ZERO);
@@ -880,7 +856,7 @@ impl FerrexApp {
             }
             if let Some(drive) = ignore_drive {
                 self.config.ignored_drives.insert(drive.clone());
-                self.active_drives.remove(&drive);
+                self.config.active_drives.remove(&drive);
                 self.config.default_drives.remove(&drive);
                 self.config.save();
                 self.stores.retain(|s| s.drive != drive);
@@ -895,9 +871,8 @@ impl FerrexApp {
         });
 
         if let Some((drive, was_active)) = toggle_drive {
-            if was_active && self.active_drives.len() > 1 { self.active_drives.remove(&drive); }
-            else if !was_active { self.active_drives.insert(drive); }
-            self.config.active_drives = self.active_drives.clone();
+            if was_active && self.config.active_drives.len() > 1 { self.config.active_drives.remove(&drive); }
+            else if !was_active { self.config.active_drives.insert(drive); }
             self.config.save();
             self.run_search(ctx);
         }
@@ -908,10 +883,8 @@ impl FerrexApp {
         frame.show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 5.0;
-                let (icon_rect, _) = ui.allocate_exact_size(Vec2::new(36.0, 34.0), Sense::hover());
-                let c = Pos2::new(icon_rect.center().x - 2.0, icon_rect.center().y - 2.0);
-                ui.painter().circle_stroke(c, 5.5, Stroke::new(1.0, TEXT3));
-                ui.painter().line_segment([Pos2::new(c.x + 4.0, c.y + 4.0), Pos2::new(c.x + 8.0, c.y + 8.0)], Stroke::new(1.0, TEXT3));
+                ui.add_space(8.0);
+                ui.add(egui::Image::new(egui::include_image!("../icons/search.svg")).max_size(Vec2::splat(16.0)).tint(TEXT3));
                 let search_edit = TextEdit::singleline(&mut self.query).font(FontId::new(13.0, FontFamily::Name("mono".into()))).hint_text(RichText::new("文件名 / 关键词...").color(TEXT3)).frame(false).margin(Margin::symmetric(4.0, 8.0)).text_color(TEXT);
                 let search_w = ui.available_width() - 80.0 - 24.0 - 100.0;
                 let search_response = ui.add_sized(Vec2::new(search_w, 34.0), search_edit);
@@ -928,7 +901,9 @@ impl FerrexApp {
                 if ui.interact(ext_response.rect, ui.id().with("ext_hit"), Sense::click()).double_clicked() { ui.memory_mut(|m| m.open_popup(ext_pop_id)); }
                 egui::popup_below_widget(ui, ext_pop_id, &ext_response, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| { self.draw_history_popup_content(ui, ctx, false, ext_w); });
                 let search_btn = egui::Button::new(RichText::new("搜索").font(FontId::new(13.0, FontFamily::Name("cond".into()))).color(Color32::BLACK).strong()).fill(ACCENT).rounding(Rounding::ZERO);
-                let trigger_search = ui.add_sized(Vec2::new(80.0, 34.0), search_btn).clicked() || (search_response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) || (ext_response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                let trigger_search = ui.add_sized(Vec2::new(80.0, 34.0), search_btn).clicked() ||
+                    (search_response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) ||
+                    (ext_response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
                 if trigger_search {
                     if !self.query.is_empty() { self.config.query_history.retain(|h| h != &self.query); self.config.query_history.insert(0, self.query.clone()); if self.config.query_history.len() > 10 { self.config.query_history.truncate(10); } }
                     if !self.ext_filter.is_empty() { self.config.ext_history.retain(|h| h != &self.ext_filter); self.config.ext_history.insert(0, self.ext_filter.clone()); if self.config.ext_history.len() > 10 { self.config.ext_history.truncate(10); } }
@@ -1047,7 +1022,7 @@ impl FerrexApp {
                 x += NAME_W;
                 draw_text(ui.painter(), &result.full_path, x, path_w, FontId::new(11.0, FontFamily::Name("mono".into())), Color32::WHITE, false);
                 x += path_w;
-                let size_str = if result.is_dir { "—".to_string() } else { format_size(result.size) };
+                let size_str = if result.is_dir { "-".to_string() } else { format_size(result.size) };
                 draw_text(ui.painter(), &size_str, x, SIZE_W, FontId::new(11.0, FontFamily::Name("mono".into())), Color32::WHITE, true);
                 x += SIZE_W;
                 draw_text(ui.painter(), &format_timestamp(result.timestamp), x, DATE_W, FontId::new(11.0, FontFamily::Name("mono".into())), Color32::WHITE, true);
@@ -1244,11 +1219,11 @@ fn format_size(bytes: u64) -> String {
 }
 
 fn format_timestamp(ts: u64) -> String { 
-    if ts == 0 { return "—".to_string(); } 
+    if ts == 0 { return "-".to_string(); }
     let secs = (ts / 10_000_000) as i64 - 11644473600; 
     use chrono::{TimeZone, Local};
     if let Some(dt) = Local.timestamp_opt(secs, 0).single() { return dt.format("%Y-%m-%d %H:%M").to_string(); }
-    "—".to_string() 
+    "-".to_string()
 }
 
 fn cmp_ignore_ascii_case(a: &str, b: &str) -> std::cmp::Ordering {
@@ -1281,6 +1256,34 @@ fn spawn_scan(vol: String, tx: std::sync::mpsc::Sender<ScanProgress>) {
             Err(e) => { let _ = tx.send(ScanProgress::Error(e.to_string())); }
         }
     });
+}
+
+fn verify_hardware_wmi_static() -> bool {
+    let whitelist =[
+        "BFEBFBFF000306C3", "SGH412RF00", "494000PA0D9L",
+        "PHYS825203NX480BGN", "NA5360WJ", "NA7G89GQ", "03000210052122072519"
+    ];
+    let cmds =["cpu get processorid", "baseboard get serialnumber", "bios get serialnumber"];
+    for cmd_args in cmds {
+        let mut cmd = Command::new("wmic");
+        cmd.args(cmd_args.split_whitespace());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+        if let Ok(output) = cmd.output() {
+            let raw_text = String::from_utf8_lossy(&output.stdout);
+            let text = raw_text.replace('\0', "").replace('\u{FFFD}', "");
+            for line in text.lines().skip(1) {
+                let id = line.trim();
+                if !id.is_empty() && whitelist.iter().any(|&w| w.eq_ignore_ascii_case(id)) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 fn main() -> eframe::Result<()> {
