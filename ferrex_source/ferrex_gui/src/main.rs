@@ -872,10 +872,10 @@ impl FerrexApp {
             let skip = ICON_W + 8.0 + TAG_W + 6.0 + 8.0;
             ui.add_space(skip);
 
-            if col_header_btn(ui, "NAME", NAME_W) { self.sort_col = SortColumn::Name; self.sort_asc = !self.sort_asc; self.apply_sort(); }
-            if col_header_btn(ui, "PATH", path_w) { self.sort_col = SortColumn::Path; self.sort_asc = !self.sort_asc; self.apply_sort(); }
-            if col_header_btn(ui, "SIZE", SIZE_W)  { self.sort_col = SortColumn::Size; self.sort_asc = !self.sort_asc; self.apply_sort(); }
-            if col_header_btn(ui, "DATE", DATE_W)  { self.sort_col = SortColumn::Date; self.sort_asc = !self.sort_asc; self.apply_sort(); }
+            if col_header_btn(ui, "名称", NAME_W) { self.sort_col = SortColumn::Name; self.sort_asc = !self.sort_asc; self.apply_sort(); }
+            if col_header_btn(ui, "路径", path_w) { self.sort_col = SortColumn::Path; self.sort_asc = !self.sort_asc; self.apply_sort(); }
+            if col_header_btn(ui, "大小", SIZE_W)  { self.sort_col = SortColumn::Size; self.sort_asc = !self.sort_asc; self.apply_sort(); }
+            if col_header_btn(ui, "修改日期", DATE_W)  { self.sort_col = SortColumn::Date; self.sort_asc = !self.sort_asc; self.apply_sort(); }
         });
     }
 
@@ -907,7 +907,6 @@ impl FerrexApp {
                 ui.spacing_mut().item_spacing.y = 0.0;
 
                 for idx in 0..results_to_show {
-                    let is_selected = self.selected_rows.contains(&idx);
                     let result      = self.results[idx].clone();
 
                     // Allocate the full-width row rect
@@ -919,9 +918,7 @@ impl FerrexApp {
                     let is_hovered = response.hovered();
 
                     // Row background
-                    let bg = if is_selected {
-                        Color32::from_rgba_unmultiplied(255, 140, 0, 25)
-                    } else if is_hovered {
+                    let bg = if is_hovered {
                         BG3
                     } else if idx % 2 == 0 {
                         BG
@@ -929,14 +926,6 @@ impl FerrexApp {
                         BG2
                     };
                     ui.painter().rect_filled(rect, Rounding::ZERO, bg);
-
-                    // Left accent stripe
-                    if is_selected || is_hovered {
-                        ui.painter().line_segment(
-                            [rect.left_top(), rect.left_bottom()],
-                            Stroke::new(2.0, ACCENT),
-                        );
-                    }
 
                     // Click / right-click
                     if response.clicked()           { new_selected    = Some(idx); }
@@ -1003,7 +992,7 @@ impl FerrexApp {
                         &result.name,
                         x, NAME_W,
                         FontId::new(12.5, FontFamily::Name("mono".into())),
-                        TEXT,
+                        Color32::WHITE,
                     );
                     x += NAME_W;
 
@@ -1013,7 +1002,7 @@ impl FerrexApp {
                         &result.full_path,
                         x, path_w,
                         FontId::new(11.0, FontFamily::Name("mono".into())),
-                        TEXT3,
+                        Color32::WHITE,
                     );
                     x += path_w;
 
@@ -1024,7 +1013,7 @@ impl FerrexApp {
                         &size_str,
                         x, SIZE_W,
                         FontId::new(11.0, FontFamily::Name("mono".into())),
-                        TEXT2,
+                        Color32::WHITE,
                     );
                     x += SIZE_W;
 
@@ -1034,7 +1023,7 @@ impl FerrexApp {
                         &format_timestamp(result.timestamp),
                         x, DATE_W,
                         FontId::new(11.0, FontFamily::Name("mono".into())),
-                        TEXT3,
+                        Color32::WHITE,
                     );
                 }
             });
@@ -1169,7 +1158,7 @@ impl FerrexApp {
 
 fn col_header_btn(ui: &mut egui::Ui, text: &str, width: f32) -> bool {
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 22.0), Sense::click());
-    let color = if response.hovered() { ACCENT } else { TEXT3 };
+    let color = if response.hovered() { ACCENT } else { Color32::WHITE };
     ui.painter().text(
         Pos2::new(rect.left(), rect.center().y),
         Align2::LEFT_CENTER,
