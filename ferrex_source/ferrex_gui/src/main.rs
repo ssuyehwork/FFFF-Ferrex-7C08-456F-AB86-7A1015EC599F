@@ -218,7 +218,7 @@ impl FerrexApp {
             #[cfg(windows)]
             app.setup_hotkey();
             #[cfg(windows)]
-            app.setup_tray();
+            app.setup_tray(cc.egui_ctx.clone());
         }
 
         app
@@ -293,11 +293,12 @@ impl FerrexApp {
     }
 
     #[cfg(windows)]
-    fn setup_tray(&mut self) {
-        use tray_icon::menu::{Menu, MenuItem, MenuId};
+    fn setup_tray(&mut self, ctx: egui::Context) {
+        use tray_icon::menu::{Menu, MenuItem, MenuId, MenuEvent};
+        use tray_icon::TrayIconEvent;
         let tray_menu = Menu::new();
         let show_i = MenuItem::with_id(MenuId::new("show_main"), "打开主界面", true, None);
-        let quit_i = MenuItem::with_id(MenuId::new("quit"), "退出 FerREX", true, None);
+        let quit_i = MenuItem::with_id(MenuId::new("quit"), "退出 Ferrex", true, None);
         let _ = tray_menu.append_items(&[&show_i, &quit_i]);
 
         if let Some(icon) = load_icon() {
@@ -308,6 +309,32 @@ impl FerrexApp {
                 .build()
                 .ok();
             self.tray = tray;
+
+            // 后台监听线程，解决窗口隐藏时 update 停止导致的点击无响应问题
+            std::thread::spawn(move || {
+                let menu_rx = MenuEvent::receiver();
+                let tray_rx = TrayIconEvent::receiver();
+                loop {
+                    if let Ok(event) = menu_rx.try_recv() {
+                        if event.id.0 == "show_main" {
+                            ctx.send_viewport_cmd(ViewportCommand::Visible(true));
+                            ctx.send_viewport_cmd(ViewportCommand::Focus);
+                        } else if event.id.0 == "quit" {
+                            ctx.send_viewport_cmd(ViewportCommand::Close);
+                        }
+                    }
+                    if let Ok(event) = tray_rx.try_recv() {
+                        match event {
+                            TrayIconEvent::Click { .. } => {
+                                ctx.send_viewport_cmd(ViewportCommand::Visible(true));
+                                ctx.send_viewport_cmd(ViewportCommand::Focus);
+                            }
+                            _ => {}
+                        }
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+            });
         }
     }
 
@@ -425,7 +452,6 @@ impl eframe::App for FerrexApp {
         self.handle_hotkey(ctx);
         self.update_stats();
         self.handle_scan_progress();
-        self.handle_tray_events(ctx);
 
         if ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(ViewportCommand::CancelClose);
@@ -922,29 +948,6 @@ impl FerrexApp {
         }
     }
 
-    fn handle_tray_events(&self, _ctx: &egui::Context) {
-        #[cfg(windows)]
-        {
-            use tray_icon::menu::MenuEvent;
-            while let Ok(event) = MenuEvent::receiver().try_recv() {
-                if event.id.0 == "show_main" {
-                    _ctx.send_viewport_cmd(ViewportCommand::Visible(true));
-                    _ctx.send_viewport_cmd(ViewportCommand::Focus);
-                } else if event.id.0 == "quit" {
-                    _ctx.send_viewport_cmd(ViewportCommand::Close);
-                }
-            }
-            while let Ok(event) = tray_icon::TrayIconEvent::receiver().try_recv() {
-                match event {
-                    tray_icon::TrayIconEvent::Click { .. } => {
-                        _ctx.send_viewport_cmd(ViewportCommand::Visible(true));
-                        _ctx.send_viewport_cmd(ViewportCommand::Focus);
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
 
     fn handle_scan_progress(&mut self) {
         let mut drop_rx = false;
