@@ -206,7 +206,9 @@ impl VolumeStore {
                 break;
             };
 
-            parts.push(name);
+            if current_frn != 5 {
+                parts.push(name);
+            }
 
             if current_frn == 5 || parent == 0 || current_frn == parent {
                 break;
@@ -215,8 +217,18 @@ impl VolumeStore {
         }
 
         parts.reverse();
-        // 修复：由于 self.drive (如 "G:") 已经自带冒号，此处应直接拼接反斜杠，避免出现 "G::\" 这种非法路径
-        let path = format!("{}\\{}", self.drive, parts.join("\\"));
+        let clean_drive = self.drive.trim_end_matches('\\').to_string();
+        let drive_prefix = if clean_drive.ends_with(':') {
+            clean_drive
+        } else {
+            format!("{}:", clean_drive)
+        };
+        let path_body = parts.join("\\");
+        let path = if path_body.is_empty() {
+            format!("{}\\", drive_prefix)
+        } else {
+            format!("{}\\{}", drive_prefix, path_body)
+        };
         self.path_cache.put(frn, path.clone());
         path
     }
@@ -1145,10 +1157,18 @@ fn open_file(path: &str) {
 
 fn reveal_in_explorer(path: &str) {
     let mut cmd = std::process::Command::new("explorer");
-    // 修复：Windows explorer 的参数传递规范，确保 /select, 后紧跟路径
-    cmd.arg(format!("/select,{}", path));
     #[cfg(windows)]
-    { use std::os::windows::process::CommandExt; cmd.creation_flags(0x08000000); }
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        // 核心修复：必须添加前导空格且确保路径被正确包裹，且 explorer 对 /select, 极其敏感
+        let clean_path = path.replace('/', "\\").trim_matches('\"');
+        cmd.raw_arg(format!(" /select,\"{}\"", clean_path));
+    }
+    #[cfg(not(windows))]
+    {
+        cmd.arg(format!("/select,{}", path));
+    }
     let _ = cmd.spawn();
 }
 
@@ -1157,15 +1177,19 @@ fn open_properties(path: &str) {
     #[cfg(windows)]
     unsafe {
         use windows::core::HSTRING;
-        let info = SHELLEXECUTEINFOW {
+        // 核心修复：HSTRING 必须绑定到局部变量以维持生命周期，防止 as_ptr() 产生野指针
+        let verb = HSTRING::from("properties");
+        let file = HSTRING::from(path);
+
+        let mut info = SHELLEXECUTEINFOW {
             cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
-            lpVerb: windows::core::PCWSTR(HSTRING::from("properties").as_ptr()),
-            lpFile: windows::core::PCWSTR(HSTRING::from(path).as_ptr()),
-            nShow: 1,
+            lpVerb: windows::core::PCWSTR(verb.as_ptr()),
+            lpFile: windows::core::PCWSTR(file.as_ptr()),
+            nShow: 1, // SW_SHOWNORMAL
             fMask: SEE_MASK_INVOKEIDLIST,
             ..Default::default()
         };
-        let _ = ShellExecuteExW(&mut { info });
+        let _ = ShellExecuteExW(&mut info);
     }
 }
 
