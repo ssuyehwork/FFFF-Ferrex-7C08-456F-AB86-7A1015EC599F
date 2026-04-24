@@ -912,15 +912,15 @@ impl FerrexApp {
                     child_ui.painter().text(tag_rect.center(), Align2::CENTER_CENTER, &result.drive[..2], FontId::new(9.0, FontFamily::Name("cond".into())), Color32::WHITE);
                     child_ui.add_space(6.0);
                     
-                    // 显式指定 halign(Align::Min) 杜绝顽固居中
-                    child_ui.add_sized([260.0, 20.0], Label::new(RichText::new(&result.name).font(FontId::new(12.5, FontFamily::Name("mono".into()))).color(Color32::WHITE)).truncate().halign(Align::Min));
+                    // 铁律：通过 Layout 强制左对齐，杜绝居中逻辑
+                    child_ui.add_sized([260.0, 20.0], Label::new(RichText::new(&result.name).font(FontId::new(12.5, FontFamily::Name("mono".into()))).color(Color32::WHITE)).truncate());
                     
                     let remaining_w = child_ui.available_width();
                     let path_w = remaining_w - 80.0 - 130.0 - 32.0;
-                    child_ui.add_sized([path_w, 20.0], Label::new(RichText::new(&result.full_path).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(Color32::WHITE)).truncate().halign(Align::Min));
+                    child_ui.add_sized([path_w, 20.0], Label::new(RichText::new(&result.full_path).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(Color32::WHITE)).truncate());
                     
-                    child_ui.add_sized([80.0, 20.0], Label::new(RichText::new(format_size(result.size)).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(Color32::WHITE)).halign(Align::Min));
-                    child_ui.add_sized([130.0, 20.0], Label::new(RichText::new(format_timestamp(result.timestamp)).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(Color32::WHITE)).halign(Align::Min));
+                    child_ui.add_sized([80.0, 20.0], Label::new(RichText::new(format_size(result.size)).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(Color32::WHITE)));
+                    child_ui.add_sized([130.0, 20.0], Label::new(RichText::new(format_timestamp(result.timestamp)).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(Color32::WHITE)));
                 }
             });
         });
@@ -1046,7 +1046,7 @@ fn header_label(ui: &mut egui::Ui, text: &str, width: f32) -> bool {
         // 铁律：表头文字也必须全部向左对齐
         let mut child_ui = ui.child_ui(rect, Layout::left_to_right(Align::Min), None);
         let color = if response.hovered() { ACCENT } else { Color32::WHITE };
-        child_ui.add(Label::new(RichText::new(text).font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(color).extra_letter_spacing(1.5)).halign(Align::Min));
+        child_ui.add(Label::new(RichText::new(text).font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(color).extra_letter_spacing(1.5)));
     }
     response.clicked()
 }
