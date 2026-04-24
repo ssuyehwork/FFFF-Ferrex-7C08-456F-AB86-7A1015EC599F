@@ -288,9 +288,16 @@ impl FerrexApp {
 
     #[cfg(windows)]
     fn setup_tray(&mut self) {
+        use tray_icon::menu::{Menu, MenuItem};
+        let tray_menu = Menu::new();
+        let show_i = MenuItem::new("打开主界面", true, None);
+        let quit_i = MenuItem::new("退出 FerREX", true, None);
+        let _ = tray_menu.append_items(&[&show_i, &quit_i]);
+
         if let Some(icon) = load_icon() {
             let tray = tray_icon::TrayIconBuilder::new()
-                .with_tooltip("Ferrex")
+                .with_menu(Box::new(tray_menu))
+                .with_tooltip("FerREX")
                 .with_icon(icon)
                 .build()
                 .ok();
@@ -412,6 +419,7 @@ impl eframe::App for FerrexApp {
         self.handle_hotkey(ctx);
         self.update_stats();
         self.handle_scan_progress();
+        self.handle_tray_events(ctx);
 
         if ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(ViewportCommand::CancelClose);
@@ -608,6 +616,24 @@ impl FerrexApp {
         ui.horizontal_centered(|ui| {
             ui.label(RichText::new("DRIVES").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3));
             ui.add_space(8.0);
+
+            // 全选 / 全清 逻辑
+            if ui.link(RichText::new("全选").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3)).clicked() {
+                for store in &self.stores {
+                    self.active_drives.insert(store.drive.clone());
+                }
+                self.run_search(ctx);
+            }
+            ui.add_space(4.0);
+            if ui.link(RichText::new("全清").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(TEXT3)).clicked() {
+                if self.active_drives.len() > 1 {
+                    let first = self.stores[0].drive.clone();
+                    self.active_drives.clear();
+                    self.active_drives.insert(first);
+                    self.run_search(ctx);
+                }
+            }
+            ui.add_space(8.0);
             for store in &self.stores {
                 let is_active = self.active_drives.contains(&store.drive);
                 let label = format!("{}:  {}", store.drive, format_count(store.record_count));
@@ -734,10 +760,10 @@ impl FerrexApp {
             let date_w = 130.0;
             let path_w = total_w - name_w - size_w - date_w - 32.0;
 
-            if header_button(ui, "NAME", name_w, self.sort_col == SortColumn::Name) { self.sort_col = SortColumn::Name; self.sort_asc = !self.sort_asc; self.apply_sort(); }
-            if header_button(ui, "PATH", path_w, self.sort_col == SortColumn::Path) { self.sort_col = SortColumn::Path; self.sort_asc = !self.sort_asc; self.apply_sort(); }
-            if header_button(ui, "SIZE", size_w, self.sort_col == SortColumn::Size) { self.sort_col = SortColumn::Size; self.sort_asc = !self.sort_asc; self.apply_sort(); }
-            if header_button(ui, "DATE", date_w, self.sort_col == SortColumn::Date) { self.sort_col = SortColumn::Date; self.sort_asc = !self.sort_asc; self.apply_sort(); }
+            if header_label(ui, "NAME", name_w) { self.sort_col = SortColumn::Name; self.sort_asc = !self.sort_asc; self.apply_sort(); }
+            if header_label(ui, "PATH", path_w) { self.sort_col = SortColumn::Path; self.sort_asc = !self.sort_asc; self.apply_sort(); }
+            if header_label(ui, "SIZE", size_w) { self.sort_col = SortColumn::Size; self.sort_asc = !self.sort_asc; self.apply_sort(); }
+            if header_label(ui, "DATE", date_w) { self.sort_col = SortColumn::Date; self.sort_asc = !self.sort_asc; self.apply_sort(); }
         });
     }
 
@@ -779,13 +805,11 @@ impl FerrexApp {
                     child_ui.add_sized([260.0, 20.0], Label::new(RichText::new(&result.name).font(FontId::new(12.5, FontFamily::Name("mono".into()))).color(TEXT)).truncate());
                     
                     let remaining_w = child_ui.available_width();
-                    child_ui.add_sized([remaining_w - 80.0 - 130.0 - 32.0, 20.0], Label::new(RichText::new(&result.full_path).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(TEXT3)).truncate());
+                    let path_w = remaining_w - 80.0 - 130.0 - 32.0;
+                    child_ui.add_sized([path_w, 20.0], Label::new(RichText::new(&result.full_path).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(TEXT3)).truncate());
                     
-                    child_ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.add_space(16.0);
-                        ui.add_sized([130.0, 20.0], Label::new(RichText::new(format_timestamp(result.timestamp)).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(TEXT3)));
-                        ui.add_sized([80.0, 20.0], Label::new(RichText::new(format_size(result.size)).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(TEXT2)));
-                    });
+                    child_ui.add_sized([80.0, 20.0], Label::new(RichText::new(format_size(result.size)).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(TEXT2)));
+                    child_ui.add_sized([130.0, 20.0], Label::new(RichText::new(format_timestamp(result.timestamp)).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(TEXT3)));
                 }
             });
         });
@@ -879,6 +903,28 @@ impl FerrexApp {
         }
     }
 
+    fn handle_tray_events(&self, _ctx: &egui::Context) {
+        #[cfg(windows)]
+        {
+            use tray_icon::menu::MenuEvent;
+            while let Ok(event) = MenuEvent::receiver().try_recv() {
+                // 根据 MenuItem 的创建顺序，ID 默认为 "1", "2" 等字符串
+                if event.id.0 == "1" {
+                    _ctx.send_viewport_cmd(ViewportCommand::Visible(true));
+                    _ctx.send_viewport_cmd(ViewportCommand::Focus);
+                } else if event.id.0 == "2" {
+                    _ctx.send_viewport_cmd(ViewportCommand::Close);
+                }
+            }
+            while let Ok(event) = tray_icon::TrayIconEvent::receiver().try_recv() {
+                if event.click_type == tray_icon::ClickType::Left {
+                    _ctx.send_viewport_cmd(ViewportCommand::Visible(true));
+                    _ctx.send_viewport_cmd(ViewportCommand::Focus);
+                }
+            }
+        }
+    }
+
     fn handle_scan_progress(&mut self) {
         let mut drop_rx = false;
         if let Some(ref rx) = self.scan_rx {
@@ -904,15 +950,12 @@ impl FerrexApp {
     }
 }
 
-fn header_button(ui: &mut egui::Ui, text: &str, width: f32, active: bool) -> bool {
-    let color = if active { ACCENT } else { TEXT3 };
-    let btn = egui::Button::new(RichText::new(text).font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(color).extra_letter_spacing(1.5))
-        .fill(Color32::TRANSPARENT);
-    
+fn header_label(ui: &mut egui::Ui, text: &str, width: f32) -> bool {
     let (rect, response) = ui.allocate_at_least(Vec2::new(width, 20.0), Sense::click());
     if ui.is_rect_visible(rect) {
         let mut child_ui = ui.child_ui(rect, Layout::left_to_right(Align::Center), None);
-        child_ui.add(btn);
+        let color = if response.hovered() { ACCENT } else { TEXT3 };
+        child_ui.add(Label::new(RichText::new(text).font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(color).extra_letter_spacing(1.5)));
     }
     response.clicked()
 }
@@ -1074,11 +1117,26 @@ fn spawn_scan(vol: String, tx: std::sync::mpsc::Sender<ScanProgress>) {
 }
 
 fn main() -> eframe::Result<()> {
+    let icon_bytes = include_bytes!("../../ferrex.png");
+    let icon = match image::load_from_memory(icon_bytes) {
+        Ok(img) => {
+            let rgba = img.into_rgba8();
+            let (width, height) = rgba.dimensions();
+            Some(egui::IconData {
+                rgba: rgba.into_raw(),
+                width,
+                height,
+            })
+        }
+        Err(_) => None,
+    };
+
     let native_options = eframe::NativeOptions { 
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1000.0, 700.0])
             .with_min_inner_size([800.0, 500.0])
-            .with_title("Ferrex")
+            .with_title("FerREX")
+            .with_icon(icon.unwrap_or_default())
             .with_decorations(false), 
         ..Default::default() 
     };
