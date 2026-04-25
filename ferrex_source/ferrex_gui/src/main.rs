@@ -964,27 +964,38 @@ impl FerrexApp {
                         trigger_search = true;
                     }
 
-                    // 扩展名清空按钮
-                    if !self.ext_filter.is_empty() {
-                        let (rect, resp) = ui.allocate_exact_size(Vec2::new(20.0, 34.0), Sense::click());
-                        let color = if resp.hovered() { DANGER } else { TEXT3 };
-                        ui.painter().text(rect.center(), Align2::CENTER_CENTER, "×", FontId::new(14.0, FontFamily::Name("mono".into())), color);
-                        if resp.clicked() { self.ext_filter.clear(); self.run_search(ctx); }
-                    } else {
-                        ui.add_space(20.0);
-                    }
+                    // 扩展名区域 (严格锁定 150 像素宽度)
+                    ui.allocate_ui(Vec2::new(150.0, 34.0), |ui| {
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            ui.spacing_mut().item_spacing.x = 0.0;
 
-                    // 扩展名输入框 (固定 150 像素并向右缩进)
-                    let ext_w = 150.0;
-                    let ext_edit = TextEdit::singleline(&mut self.ext_filter).font(FontId::new(13.0, FontFamily::Name("mono".into()))).hint_text(RichText::new("扩展名").color(TEXT3)).frame(false).margin(Margin::symmetric(4.0, 8.0)).text_color(TEXT);
-                    let resp = ui.add_sized(Vec2::new(ext_w, 34.0), ext_edit);
+                            // 1. 清空按钮 (20px)
+                            let (clear_rect, clear_resp) = ui.allocate_exact_size(Vec2::new(20.0, 34.0), Sense::click());
+                            if !self.ext_filter.is_empty() {
+                                let color = if clear_resp.hovered() { DANGER } else { TEXT3 };
+                                ui.painter().text(clear_rect.center(), Align2::CENTER_CENTER, "×", FontId::new(14.0, FontFamily::Name("mono".into())), color);
+                                if clear_resp.clicked() { self.ext_filter.clear(); self.run_search(ctx); }
+                            }
 
-                    let ext_pop_id = ui.id().with("ext_pop");
-                    if ui.interact(resp.rect, ui.id().with("ext_hit"), Sense::click()).double_clicked() { ui.memory_mut(|m| m.open_popup(ext_pop_id)); }
-                    ext_response_opt = Some(resp);
+                            // 2. 输入框 (剩余 130px)
+                            let ext_edit = TextEdit::singleline(&mut self.ext_filter)
+                                .font(FontId::new(13.0, FontFamily::Name("mono".into())))
+                                .hint_text(RichText::new("扩展名").color(TEXT3))
+                                .frame(false)
+                                .margin(Margin::symmetric(4.0, 8.0))
+                                .text_color(TEXT);
+                            let resp = ui.add_sized(Vec2::new(130.0, 34.0), ext_edit);
+
+                            let ext_pop_id = ui.id().with("ext_pop");
+                            if ui.interact(resp.rect, ui.id().with("ext_hit"), Sense::click()).double_clicked() {
+                                ui.memory_mut(|m| m.open_popup(ext_pop_id));
+                            }
+                            ext_response_opt = Some(resp);
+                        });
+                    });
                 });
 
-                let ext_response = ext_response_opt.unwrap();
+                let ext_response = ext_response_opt.expect("Extension response should be initialized");
                 let ext_pop_id = ui.id().with("ext_pop");
                 egui::popup_below_widget(ui, ext_pop_id, &ext_response, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| { self.draw_history_popup_content(ui, ctx, false, ext_response.rect.width()); });
 
