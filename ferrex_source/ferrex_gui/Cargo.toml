@@ -10,7 +10,6 @@ storage = { path = "../crates/storage" }
 search = { path = "../crates/search" }
 eframe = { version = "0.28", features = ["glow"] }
 egui_extras = { version = "0.28", features = ["image", "svg"] }
-sysinfo = "0.30"
 tokio = { version = "1.0", features = ["full"] }
 chrono    = "0.4"
 lru       = "0.12"

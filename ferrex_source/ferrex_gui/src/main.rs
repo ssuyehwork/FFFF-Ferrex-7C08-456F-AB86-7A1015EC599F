@@ -18,7 +18,6 @@ use storage::{IndexStore, LoadedIndex, MappedIndex, pool_get_name};
 use search::{Searcher, SearchOptions};
 use indexer::{UsnEvent, spawn_usn_watcher, get_ntfs_volumes};
 use lru::LruCache;
-use sysinfo::System;
 
 #[cfg(windows)]
 use windows::Win32::Foundation::HWND;
@@ -40,6 +39,8 @@ const TEXT: Color32 = Color32::from_rgb(200, 212, 220);
 const TEXT2: Color32 = Color32::from_rgb(122, 143, 158);
 const TEXT3: Color32 = Color32::from_rgb(61, 80, 96);
 const SUCCESS: Color32 = Color32::from_rgb(70, 180, 120);
+
+const PAGE_SIZE: usize = 1_000_000;
 
 #[derive(Serialize, Deserialize, Default)]
 struct AppConfig {
@@ -267,10 +268,7 @@ struct FerrexApp {
     scan_tx: std::sync::mpsc::Sender<ScanProgress>,
     scan_rx: std::sync::mpsc::Receiver<ScanProgress>,
     active_scan_count: usize,
-    sysinfo: System,
-    last_sys_poll: Instant,
-    mem_usage_mb: f32,
-    cpu_usage: f32,
+    current_page: usize,
     #[cfg(windows)]
     tray: Option<tray_icon::TrayIcon>,
     should_exit: Arc<AtomicBool>,
@@ -317,11 +315,7 @@ impl FerrexApp {
             scan_tx,
             scan_rx,
             active_scan_count: 0,
-            // 修复：取消 System::new_all()，防止程序启动时白屏卡顿数秒
-            sysinfo: System::new(),
-            last_sys_poll: Instant::now(),
-            mem_usage_mb: 0.0,
-            cpu_usage: 0.0,
+            current_page: 0,
             #[cfg(windows)]
             tray: None,
             should_exit: Arc::new(AtomicBool::new(false)),
@@ -563,55 +557,51 @@ impl FerrexApp {
                     timestamp,
                     is_dir,
                 });
-                if all_results.len() >= 5000 { break; }
             }
 
-            if all_results.len() < 5000 {
-                let candidates: Vec<(u64, String, u32)> = store.overlay.iter()
-                    .filter(|(_, e)| !e.is_deleted && e.matches(&opts))
-                    .map(|(&f, e)| (f, e.name.clone(), e.flags))
-                    .collect();
+            let candidates: Vec<(u64, String, u32)> = store.overlay.iter()
+                .filter(|(_, e)| !e.is_deleted && e.matches(&opts))
+                .map(|(&f, e)| (f, e.name.clone(), e.flags))
+                .collect();
 
-                for (frn, name, flags) in candidates {
-                    let full_path = store.resolve_live_path(frn);
-                    let is_dir = flags & 0x10 != 0;
-                    
-                    let mut size = 0;
-                    
-                    // 修复：建立兼容 Windows FILETIME 标准的当前时间戳兜底 (Epoch 为 1601年)
-                    #[allow(unused_mut)]
-                    let mut timestamp = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-                        Ok(d) => (d.as_secs() + 11644473600) * 10_000_000,
-                        Err(_) => 0,
-                    };
+            for (frn, name, flags) in candidates {
+                let full_path = store.resolve_live_path(frn);
+                let is_dir = flags & 0x10 != 0;
 
-                    // 核心修复 2：动态向系统索要 USN 覆盖层（新产生/修改过）的真实大小
-                    if let Ok(meta) = std::fs::metadata(&full_path) {
-                        if !is_dir {
-                            size = meta.len();
-                        }
-                        #[cfg(windows)]
-                        {
-                            use std::os::windows::fs::MetadataExt;
-                            timestamp = meta.last_write_time();
-                        }
+                let mut size = 0;
+
+                // 修复：建立兼容 Windows FILETIME 标准的当前时间戳兜底 (Epoch 为 1601年)
+                #[allow(unused_mut)]
+                let mut timestamp = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+                    Ok(d) => (d.as_secs() + 11644473600) * 10_000_000,
+                    Err(_) => 0,
+                };
+
+                // 核心修复 2：动态向系统索要 USN 覆盖层（新产生/修改过）的真实大小
+                if let Ok(meta) = std::fs::metadata(&full_path) {
+                    if !is_dir {
+                        size = meta.len();
                     }
-
-                    all_results.push(SearchResult {
-                        drive: store.drive.clone(),
-                        name,
-                        full_path,
-                        size, 
-                        timestamp, 
-                        is_dir,
-                    });
-                    if all_results.len() >= 5000 { break; }
+                    #[cfg(windows)]
+                    {
+                        use std::os::windows::fs::MetadataExt;
+                        timestamp = meta.last_write_time();
+                    }
                 }
+
+                all_results.push(SearchResult {
+                    drive: store.drive.clone(),
+                    name,
+                    full_path,
+                    size,
+                    timestamp,
+                    is_dir,
+                });
             }
-            if all_results.len() >= 5000 { break; }
         }
 
         self.results = all_results;
+        self.current_page = 0;
         self.apply_sort();
         
         // 修复：每次搜索后清理选中状态，防止幽灵越界访问
@@ -630,28 +620,6 @@ impl FerrexApp {
             SortColumn::Date => self.results.sort_by(|a, b| { let c = a.timestamp.cmp(&b.timestamp); if asc { c } else { c.reverse() } }),
         }
     }
-
-    fn export_selected_csv(&self) {
-        #[cfg(target_os = "windows")]
-        {
-            let path = rfd::FileDialog::new()
-                .set_file_name("ferrex_export.csv")
-                .add_filter("CSV", &["csv"])
-                .save_file();
-            if let Some(p) = path {
-                let mut content = String::from("名称,路径,大小(字节),修改时间,类型\n");
-                for &idx in &self.selected_rows {
-                    if let Some(r) = self.results.get(idx) {
-                        content.push_str(&format!("\"{}\",\"{}\",{},{},{}\n",
-                            r.name, r.full_path, r.size,
-                            format_timestamp(r.timestamp),
-                            if r.is_dir { "目录" } else { "文件" }));
-                    }
-                }
-                let _ = std::fs::write(p, content);
-            }
-        }
-    }
 }
 
 // 移除 Drop 逻辑，因为热键释放已经在线程内完成，强行在 Drop 中调用会导致异常
@@ -667,7 +635,6 @@ impl eframe::App for FerrexApp {
         }
 
         self.process_usn_events();
-        self.update_stats();
         self.handle_scan_progress(ctx);
 
         if ctx.input(|i| i.viewport().close_requested()) {
@@ -927,19 +894,40 @@ impl FerrexApp {
                 // 搜索图标
                 ui.add(egui::Image::new(egui::include_image!("../icons/search.svg")).max_size(Vec2::splat(16.0)));
                 
-                let search_edit = TextEdit::singleline(&mut self.query).font(FontId::new(13.0, FontFamily::Name("mono".into()))).hint_text(RichText::new("文件名 / 关键词...").color(TEXT3)).frame(false).margin(Margin::symmetric(4.0, 8.0)).text_color(TEXT);
-                
-                // 计算布局 (padding 已被 inner_margin 包含)
-                let search_btn_w = 80.0;
-                let ext_w = 80.0;
-                let sep_w = 24.0;
+                let ext_w = 60.0;
+                let sep_w = 12.0;
                 let clear_btn_w = 20.0;
-                let spacing = 5.0 * 6.0; 
-                let search_w = ui.available_width() - search_btn_w - ext_w - sep_w - (clear_btn_w * 2.0) - spacing;
+                let search_btn_w = 80.0;
+                let page_ctrl_w = 120.0;
+                let spacing = 5.0 * 8.0;
+
+                let search_w = ui.available_width() - ext_w - sep_w - (clear_btn_w * 2.0) - search_btn_w - page_ctrl_w - spacing;
+
+                // 1. 扩展名输入框
+                let ext_edit = TextEdit::singleline(&mut self.ext_filter).font(FontId::new(13.0, FontFamily::Name("mono".into()))).hint_text(RichText::new("EXT").color(TEXT3)).frame(false).margin(Margin::symmetric(4.0, 8.0)).text_color(TEXT);
+                let ext_response = ui.add_sized(Vec2::new(ext_w, 34.0), ext_edit);
                 
+                if !self.ext_filter.is_empty() {
+                    let (rect, resp) = ui.allocate_exact_size(Vec2::new(clear_btn_w, 34.0), Sense::click());
+                    if resp.hovered() { ui.painter().text(rect.center(), Align2::CENTER_CENTER, "×", FontId::new(14.0, FontFamily::Name("mono".into())), DANGER); }
+                    else { ui.painter().text(rect.center(), Align2::CENTER_CENTER, "×", FontId::new(14.0, FontFamily::Name("mono".into())), TEXT3); }
+                    if resp.clicked() { self.ext_filter.clear(); self.run_search(ctx); }
+                } else {
+                    ui.add_space(clear_btn_w);
+                }
+
+                let ext_pop_id = ui.id().with("ext_pop");
+                if ui.interact(ext_response.rect, ui.id().with("ext_hit"), Sense::click()).double_clicked() { ui.memory_mut(|m| m.open_popup(ext_pop_id)); }
+                egui::popup_below_widget(ui, ext_pop_id, &ext_response, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| { self.draw_history_popup_content(ui, ctx, false, ext_w); });
+
+                // 2. 竖线分隔符
+                let (dot_rect, _) = ui.allocate_exact_size(Vec2::new(sep_w, 34.0), Sense::hover());
+                ui.painter().text(dot_rect.center(), Align2::CENTER_CENTER, "|", FontId::new(14.0, FontFamily::Name("mono".into())), TEXT3);
+
+                // 3. 主搜索输入框
+                let search_edit = TextEdit::singleline(&mut self.query).font(FontId::new(13.0, FontFamily::Name("mono".into()))).hint_text(RichText::new("文件名 / 关键词...").color(TEXT3)).frame(false).margin(Margin::symmetric(4.0, 8.0)).text_color(TEXT);
                 let search_response = ui.add_sized(Vec2::new(search_w, 34.0), search_edit);
-                
-                // 清空查询按钮
+
                 if !self.query.is_empty() {
                     let (rect, resp) = ui.allocate_exact_size(Vec2::new(clear_btn_w, 34.0), Sense::click());
                     if resp.hovered() { ui.painter().text(rect.center(), Align2::CENTER_CENTER, "×", FontId::new(14.0, FontFamily::Name("mono".into())), DANGER); }
@@ -953,32 +941,36 @@ impl FerrexApp {
                 if ui.interact(search_response.rect, ui.id().with("search_hit"), Sense::click()).double_clicked() { ui.memory_mut(|m| m.open_popup(query_pop_id)); }
                 egui::popup_below_widget(ui, query_pop_id, &search_response, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| { self.draw_history_popup_content(ui, ctx, true, search_w); });
                 
-                let (dot_rect, _) = ui.allocate_exact_size(Vec2::new(sep_w, 34.0), Sense::hover());
-                ui.painter().rect_filled(dot_rect, Rounding::ZERO, BG3);
-                ui.painter().text(dot_rect.center(), Align2::CENTER_CENTER, "|", FontId::new(14.0, FontFamily::Name("mono".into())), TEXT3);
-                
-                let ext_edit = TextEdit::singleline(&mut self.ext_filter).font(FontId::new(13.0, FontFamily::Name("mono".into()))).hint_text(RichText::new("扩展名").color(TEXT3)).frame(false).margin(Margin::symmetric(4.0, 8.0)).text_color(TEXT);
-                let ext_response = ui.add_sized(Vec2::new(ext_w, 34.0), ext_edit);
+                let mut trigger_search = false;
 
-                // 清空扩展名按钮
-                if !self.ext_filter.is_empty() {
-                    let (rect, resp) = ui.allocate_exact_size(Vec2::new(clear_btn_w, 34.0), Sense::click());
-                    if resp.hovered() { ui.painter().text(rect.center(), Align2::CENTER_CENTER, "×", FontId::new(14.0, FontFamily::Name("mono".into())), DANGER); }
-                    else { ui.painter().text(rect.center(), Align2::CENTER_CENTER, "×", FontId::new(14.0, FontFamily::Name("mono".into())), TEXT3); }
-                    if resp.clicked() { self.ext_filter.clear(); self.run_search(ctx); }
-                } else {
-                    ui.add_space(clear_btn_w);
+                // 4. 搜索按钮
+                let search_btn = egui::Button::new(RichText::new("搜索").font(FontId::new(13.0, FontFamily::Name("cond".into()))).color(Color32::BLACK).strong()).fill(ACCENT).rounding(Rounding::ZERO);
+                if ui.add_sized(Vec2::new(search_btn_w, 34.0), search_btn).clicked() {
+                    trigger_search = true;
                 }
 
-                let ext_pop_id = ui.id().with("ext_pop");
-                if ui.interact(ext_response.rect, ui.id().with("ext_hit"), Sense::click()).double_clicked() { ui.memory_mut(|m| m.open_popup(ext_pop_id)); }
-                egui::popup_below_widget(ui, ext_pop_id, &ext_response, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| { self.draw_history_popup_content(ui, ctx, false, ext_w); });
-                
-                let mut trigger_search = false;
+                // 5. 翻页控件 (最右侧)
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let search_btn = egui::Button::new(RichText::new("搜索").font(FontId::new(13.0, FontFamily::Name("cond".into()))).color(Color32::BLACK).strong()).fill(ACCENT).rounding(Rounding::ZERO);
-                    if ui.add_sized(Vec2::new(search_btn_w, 34.0), search_btn).clicked() {
-                        trigger_search = true;
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    let total_pages = (self.results.len() + PAGE_SIZE - 1) / PAGE_SIZE;
+                    let total_pages = total_pages.max(1);
+
+                    let next_btn = egui::Button::new(RichText::new(">").font(FontId::new(14.0, FontFamily::Name("mono".into()))).color(TEXT)).fill(BG3).rounding(Rounding::ZERO);
+                    if ui.add_sized(Vec2::new(24.0, 24.0), next_btn).clicked() {
+                        if self.current_page + 1 < total_pages {
+                            self.current_page += 1;
+                            ctx.request_repaint();
+                        }
+                    }
+
+                    ui.label(RichText::new(format!("{}/{}", self.current_page + 1, total_pages)).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(TEXT2));
+
+                    let prev_btn = egui::Button::new(RichText::new("<").font(FontId::new(14.0, FontFamily::Name("mono".into()))).color(TEXT)).fill(BG3).rounding(Rounding::ZERO);
+                    if ui.add_sized(Vec2::new(24.0, 24.0), prev_btn).clicked() {
+                        if self.current_page > 0 {
+                            self.current_page -= 1;
+                            ctx.request_repaint();
+                        }
                     }
                 });
 
@@ -1055,7 +1047,12 @@ impl FerrexApp {
         if self.results.is_empty() { self.draw_empty_state(ui); return; }
         let mut new_selected:    Option<usize> = None;
         let available_width  = ui.available_width();
-        let results_total    = self.results.len();
+
+        let start = self.current_page * PAGE_SIZE;
+        let end = (start + PAGE_SIZE).min(self.results.len());
+        if start >= self.results.len() { return; }
+        let page_results = &self.results[start..end];
+
         const ICON_W:   f32 = 14.0;
         const TAG_W:    f32 = 22.0;
         const NAME_W:   f32 = 260.0;
@@ -1064,9 +1061,10 @@ impl FerrexApp {
         const PADDING:  f32 = 8.0 + 8.0 + 6.0 + 16.0;
         let path_w = (available_width - ICON_W - TAG_W - NAME_W - SIZE_W - DATE_W - PADDING).max(40.0);
 
-        ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, 30.0, results_total, |ui, row_range| {
+        ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, 30.0, page_results.len(), |ui, row_range| {
             ui.spacing_mut().item_spacing.y = 0.0;
-            for idx in row_range {
+            for row_idx in row_range {
+                let idx = start + row_idx;
                 let result = self.results[idx].clone();
                 let (rect, response) = ui.allocate_exact_size(Vec2::new(available_width, 30.0), Sense::click());
                 let is_hovered = response.hovered();
@@ -1135,31 +1133,23 @@ impl FerrexApp {
     }
 
     fn draw_status_bar(&self, ui: &mut egui::Ui) {
+        let total = self.results.len();
+        let total_pages = (total + PAGE_SIZE - 1) / PAGE_SIZE;
+        let total_pages = total_pages.max(1);
+        let start = self.current_page * PAGE_SIZE;
+        let end = (start + PAGE_SIZE).min(total);
+        let page_count = if total == 0 { 0 } else { end - start };
+        let memory_mb = (total as f64 * 184.0) / 1024.0 / 1024.0;
+
         ui.horizontal_centered(|ui| {
-            if self.selected_rows.len() > 1 {
-                let total_size: u64 = self.selected_rows.iter().filter_map(|&idx| self.results.get(idx)).map(|r| r.size).sum();
-                stat_item(ui, "已选", &format!("{} 项", self.selected_rows.len())); ui.add_space(8.0);
-                stat_item(ui, "合计大小", &format_size(total_size)); ui.add_space(16.0);
-                if ui.link(RichText::new("导出所选为 CSV").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(ACCENT)).clicked() { self.export_selected_csv(); }
-            } else {
-                stat_item(ui, "结果", &format_number(self.results.len())); ui.add_space(16.0);
-                stat_item(ui, "耗时", &format!("{:.1} ms", self.last_search_ms));
-            }
+            stat_item(ui, "共", &format!("{} 条", format_number(total))); ui.add_space(12.0);
+            stat_item(ui, "本页", &format!("{} 条", format_number(page_count))); ui.add_space(12.0);
+            stat_item(ui, "第", &format!("{} / {} 页", self.current_page + 1, total_pages));
+
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.label(RichText::new("FERREX v0.1.0").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(ACCENT)); ui.add_space(16.0);
-                stat_item(ui, "CPU", &format!("{:.1}%", self.cpu_usage)); ui.add_space(16.0);
-                stat_item(ui, "MEM", &format!("{:.0}MB", self.mem_usage_mb));
+                stat_item(ui, "数据占用", &format!("{:.1} MB", memory_mb));
             });
         });
-    }
-
-    fn update_stats(&mut self) {
-        if self.last_sys_poll.elapsed() >= Duration::from_secs(2) {
-            self.sysinfo.refresh_memory(); self.sysinfo.refresh_cpu_usage();
-            self.mem_usage_mb = self.sysinfo.used_memory() as f32 / 1024.0 / 1024.0;
-            self.cpu_usage = self.sysinfo.global_cpu_info().cpu_usage();
-            self.last_sys_poll = Instant::now();
-        }
     }
 
     fn handle_scan_progress(&mut self, ctx: &egui::Context) {
