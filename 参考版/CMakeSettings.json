@@ -1,0 +1,15 @@
+{
+    "configurations": [
+        {
+            "name": "x64-Release",
+            "generator": "Ninja",
+            "configurationType": "RelWithDebInfo",
+            "buildRoot": "${projectDir}\\..\\ArcMeta_Build\\${name}",
+            "installRoot": "${projectDir}\\..\\ArcMeta_Build\\install\\${name}",
+            "cmakeCommandArgs": "",
+            "buildCommandArgs": "",
+            "ctestCommandArgs": "",
+            "inheritEnvironments": [ "msvc_x64_x64" ]
+        }
+    ]
+}
