@@ -273,6 +273,10 @@ struct FerrexApp {
     tray: Option<tray_icon::TrayIcon>,
     should_exit: Arc<AtomicBool>,
     is_pinned: bool,
+    editing_idx: Option<usize>,
+    edit_buffer: String,
+    edit_ext: String,
+    just_started_editing: bool,
 }
 
 impl FerrexApp {
@@ -320,6 +324,10 @@ impl FerrexApp {
             tray: None,
             should_exit: Arc::new(AtomicBool::new(false)),
             is_pinned: false,
+            editing_idx: None,
+            edit_buffer: String::new(),
+            edit_ext: String::new(),
+            just_started_editing: false,
         };
 
         let ctx = cc.egui_ctx.clone();
@@ -1107,11 +1115,57 @@ impl FerrexApp {
                 if response.double_clicked() { open_file(&result.full_path); } 
                 else if response.clicked() { new_selected = Some(idx); }
                 response.context_menu(|ui| {
-                    ui.set_min_width(180.0);
-                    if menu_item(ui, "打开文件") { open_file(&result.full_path); ui.close_menu(); }
-                    if menu_item(ui, "在“资源管理器”中显示") { reveal_in_explorer(&result.full_path); ui.close_menu(); }
-                    if menu_item(ui, "复制路径") { ui.ctx().output_mut(|o| o.copied_text = result.full_path.clone()); ui.close_menu(); }
-                    if menu_item(ui, "复制文件名") { ui.ctx().output_mut(|o| o.copied_text = result.name.clone()); ui.close_menu(); }
+                    ui.set_min_width(200.0);
+                    let mut current_selection: Vec<usize> = self.selected_rows.iter().cloned().collect();
+                    if !current_selection.contains(&idx) {
+                        current_selection = vec![idx];
+                    }
+
+                    let paths: Vec<String> = current_selection.iter().filter_map(|&i| self.results.get(i)).map(|r| r.full_path.clone()).collect();
+                    let names: Vec<String> = current_selection.iter().filter_map(|&i| self.results.get(i)).map(|r| r.name.clone()).collect();
+
+                    if menu_item(ui, if paths.len() > 1 { "批量打开文件" } else { "打开文件" }) {
+                        batch_open_files(paths.clone());
+                        ui.close_menu();
+                    }
+                    if menu_item(ui, "在“资源管理器”中显示") {
+                        reveal_in_explorer(&result.full_path);
+                        ui.close_menu();
+                    }
+                    if menu_item(ui, if paths.len() > 1 { "批量复制路径" } else { "复制路径" }) {
+                        ui.ctx().output_mut(|o| o.copied_text = paths.join("\n"));
+                        ui.close_menu();
+                    }
+                    if menu_item(ui, if names.len() > 1 { "批量复制文件名" } else { "复制文件名" }) {
+                        ui.ctx().output_mut(|o| o.copied_text = names.join("\n"));
+                        ui.close_menu();
+                    }
+
+                    if paths.len() == 1 {
+                        if menu_item(ui, "重命名") {
+                            let path = std::path::Path::new(&result.full_path);
+                            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or(&result.name);
+                            let ext = path.extension().and_then(|s| s.to_str()).map(|s| format!(".{}", s)).unwrap_or_default();
+
+                            self.editing_idx = Some(idx);
+                            self.edit_buffer = stem.to_string();
+                            self.edit_ext = ext;
+                            self.just_started_editing = true;
+                            ui.close_menu();
+                        }
+                    }
+
+                    ui.separator();
+
+                    if menu_item(ui, if paths.len() > 1 { "批量删除" } else { "删除" }) {
+                        if delete_files(paths.clone()) {
+                            // 简单的刷新：清空当前结果，提示用户重新搜索
+                            // 实际上应该从 self.results 中移除，但由于是带索引的，比较复杂
+                            self.run_search(ui.ctx());
+                        }
+                        ui.close_menu();
+                    }
+
                     ui.separator();
                     if menu_item(ui, "属性") { open_properties(&result.full_path); ui.close_menu(); }
                 });
@@ -1132,7 +1186,38 @@ impl FerrexApp {
                     let clip_rect = egui::Rect::from_min_size(Pos2::new(col_x, rect.top()), Vec2::new(col_w, rect.height()));
                     painter.with_clip_rect(clip_rect).text(text_pos, align, text, font, color);
                 };
-                draw_text(ui.painter(), &result.name, x, NAME_W, FontId::new(12.5, FontFamily::Name("mono".into())), Color32::WHITE, false);
+                if self.editing_idx == Some(idx) {
+                    let edit_rect = egui::Rect::from_min_size(Pos2::new(x, rect.top() + 4.0), Vec2::new(NAME_W, 22.0));
+                    let mut edit_ui = ui.child_ui(edit_rect, Layout::left_to_right(Align::Center), None);
+                    let response = edit_ui.add(TextEdit::singleline(&mut self.edit_buffer).font(FontId::new(12.5, FontFamily::Name("mono".into()))).desired_width(NAME_W - 40.0));
+                    if self.just_started_editing {
+                        response.request_focus();
+                        self.just_started_editing = false;
+                    }
+                    edit_ui.label(RichText::new(&self.edit_ext).font(FontId::new(12.5, FontFamily::Name("mono".into()))).color(TEXT2));
+
+                    let should_cancel = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                    let should_save = (response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) ||
+                                      (response.lost_focus() && !should_cancel);
+
+                    if should_save {
+                        let old_p = std::path::Path::new(&result.full_path);
+                        let stem = old_p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                        if self.edit_buffer != stem && !self.edit_buffer.trim().is_empty() {
+                            if let Some(parent) = old_p.parent() {
+                                let new_name = format!("{}{}", self.edit_buffer, self.edit_ext);
+                                let new_p = parent.join(new_name);
+                                let _ = std::fs::rename(old_p, new_p);
+                                self.run_search(ui.ctx());
+                            }
+                        }
+                        self.editing_idx = None;
+                    } else if should_cancel {
+                        self.editing_idx = None;
+                    }
+                } else {
+                    draw_text(ui.painter(), &result.name, x, NAME_W, FontId::new(12.5, FontFamily::Name("mono".into())), Color32::WHITE, false);
+                }
                 x += NAME_W;
                 draw_text(ui.painter(), &result.full_path, x, path_w, FontId::new(11.0, FontFamily::Name("mono".into())), Color32::WHITE, false);
                 x += path_w;
@@ -1258,6 +1343,12 @@ fn open_file(path: &str) {
     let _ = cmd.spawn();
 }
 
+fn batch_open_files(paths: Vec<String>) {
+    for path in paths {
+        open_file(&path);
+    }
+}
+
 fn reveal_in_explorer(path: &str) {
     let mut cmd = std::process::Command::new("explorer");
     #[cfg(windows)]
@@ -1273,6 +1364,38 @@ fn reveal_in_explorer(path: &str) {
         cmd.arg(path);
     }
     let _ = cmd.spawn();
+}
+
+fn delete_files(paths: Vec<String>) -> bool {
+    #[cfg(windows)]
+    {
+        let count = paths.len();
+        let msg = if count == 1 {
+            format!("确定要永久删除此文件吗？\n{}", paths[0])
+        } else {
+            format!("确定要永久删除这 {} 个项目吗？", count)
+        };
+
+        let confirm = rfd::MessageDialog::new()
+            .set_title("确认删除")
+            .set_description(&msg)
+            .set_buttons(rfd::MessageButtons::OkCancel)
+            .show();
+
+        if confirm == rfd::MessageDialogResult::Ok {
+            for path in paths {
+                let p = std::path::Path::new(&path);
+                if p.is_dir() {
+                    let _ = std::fs::remove_dir_all(p);
+                } else {
+                    let _ = std::fs::remove_file(p);
+                }
+            }
+            return true;
+        }
+    }
+    let _ = paths;
+    false
 }
 
 #[allow(unused_variables)]
