@@ -908,6 +908,11 @@ impl FerrexApp {
     }
 
     fn draw_search_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let query_pop_id = ui.id().with("query_pop");
+        let ext_pop_id = ui.id().with("ext_pop");
+        let query_hit_id = ui.id().with("query_hit");
+        let ext_hit_id = ui.id().with("ext_hit");
+
         let frame = Frame::none().fill(BG2).stroke(Stroke::new(1.0, BORDER2)).rounding(Rounding::ZERO).inner_margin(Margin::symmetric(5.0, 0.0));
         frame.show(ui, |ui| {
             ui.spacing_mut().item_spacing.x = 5.0;
@@ -929,8 +934,9 @@ impl FerrexApp {
                     ui.add_space(20.0);
                 }
 
-                let query_pop_id = ui.id().with("query_pop");
-                if ui.interact(search_response.rect, ui.id().with("search_hit"), Sense::click()).double_clicked() { ui.memory_mut(|m| m.open_popup(query_pop_id)); }
+                if ui.interact(search_response.rect, query_hit_id, Sense::click()).double_clicked() {
+                    ui.memory_mut(|m| m.open_popup(query_pop_id));
+                }
                 egui::popup_below_widget(ui, query_pop_id, &search_response, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| { self.draw_history_popup_content(ui, ctx, true, search_w); });
 
                 // 3. 橙色分隔符
@@ -986,8 +992,7 @@ impl FerrexApp {
                                 .text_color(TEXT);
                             let resp = ui.add_sized(Vec2::new(130.0, 34.0), ext_edit);
 
-                            let ext_pop_id = ui.id().with("ext_pop");
-                            if ui.interact(resp.rect, ui.id().with("ext_hit"), Sense::click()).double_clicked() {
+                            if ui.interact(resp.rect, ext_hit_id, Sense::click()).double_clicked() {
                                 ui.memory_mut(|m| m.open_popup(ext_pop_id));
                             }
                             ext_response_opt = Some(resp);
@@ -996,7 +1001,6 @@ impl FerrexApp {
                 });
 
                 let ext_response = ext_response_opt.expect("Extension response should be initialized");
-                let ext_pop_id = ui.id().with("ext_pop");
                 egui::popup_below_widget(ui, ext_pop_id, &ext_response, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| { self.draw_history_popup_content(ui, ctx, false, ext_response.rect.width()); });
 
                 if !trigger_search {
