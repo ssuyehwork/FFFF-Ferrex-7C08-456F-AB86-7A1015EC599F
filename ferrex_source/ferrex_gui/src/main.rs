@@ -620,6 +620,28 @@ impl FerrexApp {
             SortColumn::Date => self.results.sort_by(|a, b| { let c = a.timestamp.cmp(&b.timestamp); if asc { c } else { c.reverse() } }),
         }
     }
+
+    fn export_selected_csv(&self) {
+        #[cfg(target_os = "windows")]
+        {
+            let path = rfd::FileDialog::new()
+                .set_file_name("ferrex_export.csv")
+                .add_filter("CSV", &["csv"])
+                .save_file();
+            if let Some(p) = path {
+                let mut content = String::from("名称,路径,大小(字节),修改时间,类型\n");
+                for &idx in &self.selected_rows {
+                    if let Some(r) = self.results.get(idx) {
+                        content.push_str(&format!("\"{}\",\"{}\",{},{},{}\n",
+                            r.name, r.full_path, r.size,
+                            format_timestamp(r.timestamp),
+                            if r.is_dir { "目录" } else { "文件" }));
+                    }
+                }
+                let _ = std::fs::write(p, content);
+            }
+        }
+    }
 }
 
 // 移除 Drop 逻辑，因为热键释放已经在线程内完成，强行在 Drop 中调用会导致异常
@@ -894,8 +916,8 @@ impl FerrexApp {
                 // 搜索图标
                 ui.add(egui::Image::new(egui::include_image!("../icons/search.svg")).max_size(Vec2::splat(16.0)));
                 
-                let ext_w = 60.0;
-                let sep_w = 12.0;
+                let ext_w = 80.0;
+                let sep_w = 24.0;
                 let clear_btn_w = 20.0;
                 let search_btn_w = 80.0;
                 let page_ctrl_w = 120.0;
@@ -903,8 +925,8 @@ impl FerrexApp {
 
                 let search_w = ui.available_width() - ext_w - sep_w - (clear_btn_w * 2.0) - search_btn_w - page_ctrl_w - spacing;
 
-                // 1. 扩展名输入框
-                let ext_edit = TextEdit::singleline(&mut self.ext_filter).font(FontId::new(13.0, FontFamily::Name("mono".into()))).hint_text(RichText::new("EXT").color(TEXT3)).frame(false).margin(Margin::symmetric(4.0, 8.0)).text_color(TEXT);
+                // 1. 扩展名输入框 (移到左侧)
+                let ext_edit = TextEdit::singleline(&mut self.ext_filter).font(FontId::new(13.0, FontFamily::Name("mono".into()))).hint_text(RichText::new("扩展名").color(TEXT3)).frame(false).margin(Margin::symmetric(4.0, 8.0)).text_color(TEXT);
                 let ext_response = ui.add_sized(Vec2::new(ext_w, 34.0), ext_edit);
                 
                 if !self.ext_filter.is_empty() {
@@ -920,8 +942,9 @@ impl FerrexApp {
                 if ui.interact(ext_response.rect, ui.id().with("ext_hit"), Sense::click()).double_clicked() { ui.memory_mut(|m| m.open_popup(ext_pop_id)); }
                 egui::popup_below_widget(ui, ext_pop_id, &ext_response, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| { self.draw_history_popup_content(ui, ctx, false, ext_w); });
 
-                // 2. 竖线分隔符
+                // 2. 竖线分隔符 (保留背景色)
                 let (dot_rect, _) = ui.allocate_exact_size(Vec2::new(sep_w, 34.0), Sense::hover());
+                ui.painter().rect_filled(dot_rect, Rounding::ZERO, BG3);
                 ui.painter().text(dot_rect.center(), Align2::CENTER_CENTER, "|", FontId::new(14.0, FontFamily::Name("mono".into())), TEXT3);
 
                 // 3. 主搜索输入框
@@ -949,7 +972,7 @@ impl FerrexApp {
                     trigger_search = true;
                 }
 
-                // 5. 翻页控件 (最右侧)
+                // 5. 翻页控件 (最右侧，替换原扩展名区域位置)
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
                     let total_pages = (self.results.len() + PAGE_SIZE - 1) / PAGE_SIZE;
@@ -1142,9 +1165,17 @@ impl FerrexApp {
         let memory_mb = (total as f64 * 184.0) / 1024.0 / 1024.0;
 
         ui.horizontal_centered(|ui| {
-            stat_item(ui, "共", &format!("{} 条", format_number(total))); ui.add_space(12.0);
-            stat_item(ui, "本页", &format!("{} 条", format_number(page_count))); ui.add_space(12.0);
-            stat_item(ui, "第", &format!("{} / {} 页", self.current_page + 1, total_pages));
+            if self.selected_rows.len() > 1 {
+                let total_size: u64 = self.selected_rows.iter().filter_map(|&idx| self.results.get(idx)).map(|r| r.size).sum();
+                stat_item(ui, "已选", &format!("{} 项", self.selected_rows.len())); ui.add_space(8.0);
+                stat_item(ui, "合计大小", &format_size(total_size)); ui.add_space(16.0);
+                if ui.link(RichText::new("导出所选为 CSV").font(FontId::new(10.0, FontFamily::Name("cond".into()))).color(ACCENT)).clicked() { self.export_selected_csv(); }
+            } else {
+                stat_item(ui, "共", &format!("{} 条", format_number(total))); ui.add_space(12.0);
+                stat_item(ui, "本页", &format!("{} 条", format_number(page_count))); ui.add_space(12.0);
+                stat_item(ui, "第", &format!("{} / {} 页", self.current_page + 1, total_pages)); ui.add_space(16.0);
+                stat_item(ui, "耗时", &format!("{:.1} ms", self.last_search_ms));
+            }
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 stat_item(ui, "数据占用", &format!("{:.1} MB", memory_mb));
