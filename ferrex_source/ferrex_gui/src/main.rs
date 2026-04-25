@@ -1190,17 +1190,23 @@ impl FerrexApp {
                     response.request_focus();
                     edit_ui.label(RichText::new(&self.edit_ext).font(FontId::new(12.5, FontFamily::Name("mono".into()))).color(TEXT2));
 
-                    if response.lost_focus() || (response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+                    let should_cancel = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                    let should_save = (response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) ||
+                                      (response.lost_focus() && !should_cancel);
+
+                    if should_save {
                         let old_p = std::path::Path::new(&result.full_path);
-                        if let Some(parent) = old_p.parent() {
-                            let new_name = format!("{}{}", self.edit_buffer, self.edit_ext);
-                            let new_p = parent.join(new_name);
-                            let _ = std::fs::rename(old_p, new_p);
-                            self.run_search(ui.ctx());
+                        let stem = old_p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                        if self.edit_buffer != stem && !self.edit_buffer.trim().is_empty() {
+                            if let Some(parent) = old_p.parent() {
+                                let new_name = format!("{}{}", self.edit_buffer, self.edit_ext);
+                                let new_p = parent.join(new_name);
+                                let _ = std::fs::rename(old_p, new_p);
+                                self.run_search(ui.ctx());
+                            }
                         }
                         self.editing_idx = None;
-                    }
-                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    } else if should_cancel {
                         self.editing_idx = None;
                     }
                 } else {
