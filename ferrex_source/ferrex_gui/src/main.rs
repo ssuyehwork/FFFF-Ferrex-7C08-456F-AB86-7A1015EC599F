@@ -919,23 +919,22 @@ impl FerrexApp {
     }
 
     fn draw_search_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        let frame = Frame::none().fill(BG2).stroke(Stroke::new(1.0, BORDER2)).rounding(Rounding::ZERO);
+        let frame = Frame::none().fill(BG2).stroke(Stroke::new(1.0, BORDER2)).rounding(Rounding::ZERO).inner_margin(Margin::symmetric(5.0, 0.0));
         frame.show(ui, |ui| {
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 5.0;
-                ui.add_space(5.0);
 
                 // 搜索图标
                 ui.add(egui::Image::new(egui::include_image!("../icons/search.svg")).max_size(Vec2::splat(16.0)));
 
                 let search_edit = TextEdit::singleline(&mut self.query).font(FontId::new(13.0, FontFamily::Name("mono".into()))).hint_text(RichText::new("文件名 / 关键词...").color(TEXT3)).frame(false).margin(Margin::symmetric(4.0, 8.0)).text_color(TEXT);
 
-                // 计算布局
+                // 计算布局 (padding 已被 inner_margin 包含)
                 let search_btn_w = 80.0;
                 let ext_w = 80.0;
                 let sep_w = 24.0;
-                let padding = 5.0 + 5.0 * 4.0 + 5.0;
-                let search_w = ui.available_width() - search_btn_w - ext_w - sep_w - padding;
+                let spacing = 5.0 * 4.0;
+                let search_w = ui.available_width() - search_btn_w - ext_w - sep_w - spacing;
 
                 let search_response = ui.add_sized(Vec2::new(search_w, 34.0), search_edit);
                 let query_pop_id = ui.id().with("query_pop");
@@ -954,7 +953,6 @@ impl FerrexApp {
 
                 let mut trigger_search = false;
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.add_space(5.0); // 右边距 5 像素
                     let search_btn = egui::Button::new(RichText::new("搜索").font(FontId::new(13.0, FontFamily::Name("cond".into()))).color(Color32::BLACK).strong()).fill(ACCENT).rounding(Rounding::ZERO);
                     if ui.add_sized(Vec2::new(search_btn_w, 34.0), search_btn).clicked() {
                         trigger_search = true;
