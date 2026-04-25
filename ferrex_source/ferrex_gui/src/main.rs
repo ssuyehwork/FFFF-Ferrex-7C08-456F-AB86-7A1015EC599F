@@ -97,7 +97,7 @@ impl IconCache {
             return (&self.textures[&cache_key]).into();
         }
 
-        egui::include_image!("../../ferrex.ico") // Fallback
+        egui::include_image!("../icons/logo.svg") // Fallback
     }
 
     fn load_system_icon(&self, ctx: &egui::Context, path: &str, is_dir: bool) -> Option<egui::TextureHandle> {
@@ -731,7 +731,7 @@ impl FerrexApp {
     fn draw_titlebar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_centered(|ui| {
             ui.add_space(8.0);
-            ui.add(egui::Image::new(egui::include_image!("../../ferrex.ico")).max_size(Vec2::new(18.0, 18.0)));
+            ui.add(egui::Image::new(egui::include_image!("../icons/logo.svg")).max_size(Vec2::new(18.0, 18.0)));
             ui.add_space(8.0);
             ui.label(RichText::new("FERREX").font(FontId::new(14.0, FontFamily::Name("cond".into()))).color(ACCENT).extra_letter_spacing(1.5));
             ui.add_space(12.0);
@@ -1298,7 +1298,7 @@ fn open_properties(path: &str) {
 
 #[cfg(windows)]
 fn load_icon() -> Option<tray_icon::Icon> {
-    let icon_bytes = include_bytes!("../../ferrex.ico");
+    let icon_bytes = include_bytes!("../icons/logo_hd.png");
     let image = image::load_from_memory(icon_bytes).ok()?.into_rgba8();
     let (width, height) = image.dimensions();
     let rgba = image.into_raw();
@@ -1416,7 +1416,7 @@ fn verify_hardware_wmi_static() -> bool {
 }
 
 fn main() -> eframe::Result<()> {
-    let icon_bytes = include_bytes!("../../ferrex.ico");
+    let icon_bytes = include_bytes!("../icons/logo_hd.png");
     let icon = match image::load_from_memory(icon_bytes) {
         Ok(img) => {
             let rgba = img.into_rgba8();
