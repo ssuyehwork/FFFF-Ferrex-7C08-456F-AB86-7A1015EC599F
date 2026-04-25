@@ -917,13 +917,12 @@ impl FerrexApp {
                 ui.add(egui::Image::new(egui::include_image!("../icons/search.svg")).max_size(Vec2::splat(16.0)));
                 
                 let search_btn_w = 80.0;
-                let ext_w = 80.0;
                 let sep_w = 24.0;
                 let clear_btn_w = 20.0;
                 let page_ctrl_w = 120.0;
-                let spacing = 5.0 * 8.0;
-
-                let search_w = ui.available_width() - ext_w - sep_w - (clear_btn_w * 2.0) - search_btn_w - page_ctrl_w - spacing;
+                // 留白优化：主搜索框占固定剩余比例或固定宽度，其余全给扩展名
+                let search_w = 400.0f32.min(ui.available_width() * 0.5);
+                let ext_w = ui.available_width() - search_w - sep_w - (clear_btn_w * 2.0) - search_btn_w - page_ctrl_w - (5.0 * 8.0);
 
                 // 1. 主搜索输入框
                 let search_edit = TextEdit::singleline(&mut self.query).font(FontId::new(13.0, FontFamily::Name("mono".into()))).hint_text(RichText::new("文件名 / 关键词...").color(TEXT3)).frame(false).margin(Margin::symmetric(4.0, 8.0)).text_color(TEXT);
