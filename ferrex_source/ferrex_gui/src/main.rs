@@ -506,6 +506,15 @@ impl FerrexApp {
     }
 
     fn run_search(&mut self, _ctx: &egui::Context) {
+        if self.query.trim().is_empty() && self.ext_filter.trim().is_empty() {
+            self.results.clear();
+            self.current_page = 0;
+            self.selected_rows.clear();
+            self.last_clicked_row = None;
+            self.last_search_ms = 0.0;
+            return;
+        }
+
         let t0 = Instant::now();
         let opts = SearchOptions {
             query: &self.query,
@@ -678,7 +687,7 @@ impl eframe::App for FerrexApp {
             .show(ctx, |ui| { self.draw_drive_selector(ui, ctx); });
 
         egui::TopBottomPanel::top("searchbar_area")
-            .exact_height(if self.is_scanning { 50.0 } else { 48.0 })
+            .exact_height(if self.is_scanning { 52.0 } else { 50.0 })
             .frame(Frame::none().fill(PANEL))
             .show(ctx, |ui| {
                 Frame::none().inner_margin(Margin::symmetric(5.0, 8.0)).show(ui, |ui| {
@@ -916,8 +925,8 @@ impl FerrexApp {
         let frame = Frame::none().fill(BG2).stroke(Stroke::new(1.0, BORDER2)).rounding(Rounding::ZERO).inner_margin(Margin::symmetric(5.0, 0.0));
         frame.show(ui, |ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
-            ui.horizontal(|ui| {
-                // 1. 图标 (垂直居中修复)
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                // 1. 图标
                 let (icon_rect, _) = ui.allocate_exact_size(Vec2::new(30.0, 34.0), Sense::hover());
                 let mut icon_ui = ui.child_ui(icon_rect, Layout::centered_and_justified(Direction::LeftToRight), None);
                 icon_ui.add(egui::Image::new(egui::include_image!("../icons/search.svg")).max_size(Vec2::splat(16.0)));
@@ -975,7 +984,7 @@ impl FerrexApp {
                     // 3. 中间填充部分：主搜索输入框 (自适应宽度，消除空白)
                     ui.spacing_mut().item_spacing.x = 5.0;
                     let remaining_w = ui.available_width();
-                    ui.horizontal(|ui| {
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = 0.0;
                         let search_edit = TextEdit::singleline(&mut self.query).font(FontId::new(13.0, FontFamily::Name("mono".into()))).hint_text(RichText::new("文件名 / 关键词...").color(TEXT3)).frame(false).margin(Margin::symmetric(4.0, 8.0)).text_color(TEXT);
                         let search_response = ui.add_sized(Vec2::new(remaining_w - 20.0, 34.0), search_edit);
