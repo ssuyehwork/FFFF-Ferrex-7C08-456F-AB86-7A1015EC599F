@@ -276,6 +276,7 @@ struct FerrexApp {
     editing_idx: Option<usize>,
     edit_buffer: String,
     edit_ext: String,
+    just_started_editing: bool,
 }
 
 impl FerrexApp {
@@ -326,6 +327,7 @@ impl FerrexApp {
             editing_idx: None,
             edit_buffer: String::new(),
             edit_ext: String::new(),
+            just_started_editing: false,
         };
 
         let ctx = cc.egui_ctx.clone();
@@ -1148,6 +1150,7 @@ impl FerrexApp {
                             self.editing_idx = Some(idx);
                             self.edit_buffer = stem.to_string();
                             self.edit_ext = ext;
+                            self.just_started_editing = true;
                             ui.close_menu();
                         }
                     }
@@ -1187,7 +1190,10 @@ impl FerrexApp {
                     let edit_rect = egui::Rect::from_min_size(Pos2::new(x, rect.top() + 4.0), Vec2::new(NAME_W, 22.0));
                     let mut edit_ui = ui.child_ui(edit_rect, Layout::left_to_right(Align::Center), None);
                     let response = edit_ui.add(TextEdit::singleline(&mut self.edit_buffer).font(FontId::new(12.5, FontFamily::Name("mono".into()))).desired_width(NAME_W - 40.0));
-                    response.request_focus();
+                    if self.just_started_editing {
+                        response.request_focus();
+                        self.just_started_editing = false;
+                    }
                     edit_ui.label(RichText::new(&self.edit_ext).font(FontId::new(12.5, FontFamily::Name("mono".into()))).color(TEXT2));
 
                     let should_cancel = ui.input(|i| i.key_pressed(egui::Key::Escape));
