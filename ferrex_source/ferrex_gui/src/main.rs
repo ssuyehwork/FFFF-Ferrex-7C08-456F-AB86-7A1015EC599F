@@ -273,8 +273,9 @@ struct FerrexApp {
     tray: Option<tray_icon::TrayIcon>,
     should_exit: Arc<AtomicBool>,
     is_pinned: bool,
-    rename_path: Option<String>,
-    rename_new_name: String,
+    editing_idx: Option<usize>,
+    edit_buffer: String,
+    edit_ext: String,
 }
 
 impl FerrexApp {
@@ -322,8 +323,9 @@ impl FerrexApp {
             tray: None,
             should_exit: Arc::new(AtomicBool::new(false)),
             is_pinned: false,
-            rename_path: None,
-            rename_new_name: String::new(),
+            editing_idx: None,
+            edit_buffer: String::new(),
+            edit_ext: String::new(),
         };
 
         let ctx = cc.egui_ctx.clone();
@@ -714,7 +716,6 @@ impl eframe::App for FerrexApp {
                 self.draw_column_header(ui);
                 self.draw_results_list(ui);
             });
-            self.draw_rename_modal(ctx);
         });
     }
 }
@@ -1140,8 +1141,13 @@ impl FerrexApp {
 
                     if paths.len() == 1 {
                         if menu_item(ui, "重命名") {
-                            self.rename_path = Some(result.full_path.clone());
-                            self.rename_new_name = result.name.clone();
+                            let path = std::path::Path::new(&result.full_path);
+                            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or(&result.name);
+                            let ext = path.extension().and_then(|s| s.to_str()).map(|s| format!(".{}", s)).unwrap_or_default();
+
+                            self.editing_idx = Some(idx);
+                            self.edit_buffer = stem.to_string();
+                            self.edit_ext = ext;
                             ui.close_menu();
                         }
                     }
@@ -1177,7 +1183,29 @@ impl FerrexApp {
                     let clip_rect = egui::Rect::from_min_size(Pos2::new(col_x, rect.top()), Vec2::new(col_w, rect.height()));
                     painter.with_clip_rect(clip_rect).text(text_pos, align, text, font, color);
                 };
-                draw_text(ui.painter(), &result.name, x, NAME_W, FontId::new(12.5, FontFamily::Name("mono".into())), Color32::WHITE, false);
+                if self.editing_idx == Some(idx) {
+                    let edit_rect = egui::Rect::from_min_size(Pos2::new(x, rect.top() + 4.0), Vec2::new(NAME_W, 22.0));
+                    let mut edit_ui = ui.child_ui(edit_rect, Layout::left_to_right(Align::Center), None);
+                    let response = edit_ui.add(TextEdit::singleline(&mut self.edit_buffer).font(FontId::new(12.5, FontFamily::Name("mono".into()))).desired_width(NAME_W - 40.0));
+                    response.request_focus();
+                    edit_ui.label(RichText::new(&self.edit_ext).font(FontId::new(12.5, FontFamily::Name("mono".into()))).color(TEXT2));
+
+                    if response.lost_focus() || (response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+                        let old_p = std::path::Path::new(&result.full_path);
+                        if let Some(parent) = old_p.parent() {
+                            let new_name = format!("{}{}", self.edit_buffer, self.edit_ext);
+                            let new_p = parent.join(new_name);
+                            let _ = std::fs::rename(old_p, new_p);
+                            self.run_search(ui.ctx());
+                        }
+                        self.editing_idx = None;
+                    }
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        self.editing_idx = None;
+                    }
+                } else {
+                    draw_text(ui.painter(), &result.name, x, NAME_W, FontId::new(12.5, FontFamily::Name("mono".into())), Color32::WHITE, false);
+                }
                 x += NAME_W;
                 draw_text(ui.painter(), &result.full_path, x, path_w, FontId::new(11.0, FontFamily::Name("mono".into())), Color32::WHITE, false);
                 x += path_w;
@@ -1236,39 +1264,6 @@ impl FerrexApp {
                 stat_item(ui, "数据占用", &format!("{:.1} MB", memory_mb));
             });
         });
-    }
-
-    fn draw_rename_modal(&mut self, ctx: &egui::Context) {
-        if let Some(old_path) = self.rename_path.clone() {
-            egui::Window::new("重命名")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-                .show(ctx, |ui| {
-                    ui.label(format!("原始路径: {}", old_path));
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        ui.label("新名称: ");
-                        ui.text_edit_singleline(&mut self.rename_new_name);
-                    });
-                    ui.add_space(12.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("确定").clicked() {
-                            let old_p = std::path::Path::new(&old_path);
-                            if let Some(parent) = old_p.parent() {
-                                let new_path = parent.join(&self.rename_new_name);
-                                let _ = std::fs::rename(old_p, new_path);
-                            }
-                            self.rename_path = None;
-                            self.rename_new_name.clear();
-                        }
-                        if ui.button("取消").clicked() {
-                            self.rename_path = None;
-                            self.rename_new_name.clear();
-                        }
-                    });
-                });
-        }
     }
 
     fn handle_scan_progress(&mut self, ctx: &egui::Context) {
