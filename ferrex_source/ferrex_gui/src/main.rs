@@ -273,6 +273,8 @@ struct FerrexApp {
     tray: Option<tray_icon::TrayIcon>,
     should_exit: Arc<AtomicBool>,
     is_pinned: bool,
+    rename_path: Option<String>,
+    rename_new_name: String,
 }
 
 impl FerrexApp {
@@ -320,6 +322,8 @@ impl FerrexApp {
             tray: None,
             should_exit: Arc::new(AtomicBool::new(false)),
             is_pinned: false,
+            rename_path: None,
+            rename_new_name: String::new(),
         };
 
         let ctx = cc.egui_ctx.clone();
@@ -710,6 +714,7 @@ impl eframe::App for FerrexApp {
                 self.draw_column_header(ui);
                 self.draw_results_list(ui);
             });
+            self.draw_rename_modal(ctx);
         });
     }
 }
@@ -1107,11 +1112,51 @@ impl FerrexApp {
                 if response.double_clicked() { open_file(&result.full_path); } 
                 else if response.clicked() { new_selected = Some(idx); }
                 response.context_menu(|ui| {
-                    ui.set_min_width(180.0);
-                    if menu_item(ui, "打开文件") { open_file(&result.full_path); ui.close_menu(); }
-                    if menu_item(ui, "在“资源管理器”中显示") { reveal_in_explorer(&result.full_path); ui.close_menu(); }
-                    if menu_item(ui, "复制路径") { ui.ctx().output_mut(|o| o.copied_text = result.full_path.clone()); ui.close_menu(); }
-                    if menu_item(ui, "复制文件名") { ui.ctx().output_mut(|o| o.copied_text = result.name.clone()); ui.close_menu(); }
+                    ui.set_min_width(200.0);
+                    let mut current_selection: Vec<usize> = self.selected_rows.iter().cloned().collect();
+                    if !current_selection.contains(&idx) {
+                        current_selection = vec![idx];
+                    }
+
+                    let paths: Vec<String> = current_selection.iter().filter_map(|&i| self.results.get(i)).map(|r| r.full_path.clone()).collect();
+                    let names: Vec<String> = current_selection.iter().filter_map(|&i| self.results.get(i)).map(|r| r.name.clone()).collect();
+
+                    if menu_item(ui, if paths.len() > 1 { "批量打开文件" } else { "打开文件" }) {
+                        batch_open_files(paths.clone());
+                        ui.close_menu();
+                    }
+                    if menu_item(ui, "在“资源管理器”中显示") {
+                        reveal_in_explorer(&result.full_path);
+                        ui.close_menu();
+                    }
+                    if menu_item(ui, if paths.len() > 1 { "批量复制路径" } else { "复制路径" }) {
+                        ui.ctx().output_mut(|o| o.copied_text = paths.join("\n"));
+                        ui.close_menu();
+                    }
+                    if menu_item(ui, if names.len() > 1 { "批量复制文件名" } else { "复制文件名" }) {
+                        ui.ctx().output_mut(|o| o.copied_text = names.join("\n"));
+                        ui.close_menu();
+                    }
+
+                    if paths.len() == 1 {
+                        if menu_item(ui, "重命名") {
+                            self.rename_path = Some(result.full_path.clone());
+                            self.rename_new_name = result.name.clone();
+                            ui.close_menu();
+                        }
+                    }
+
+                    ui.separator();
+
+                    if menu_item(ui, if paths.len() > 1 { "批量删除" } else { "删除" }) {
+                        if delete_files(paths.clone()) {
+                            // 简单的刷新：清空当前结果，提示用户重新搜索
+                            // 实际上应该从 self.results 中移除，但由于是带索引的，比较复杂
+                            self.run_search(ui.ctx());
+                        }
+                        ui.close_menu();
+                    }
+
                     ui.separator();
                     if menu_item(ui, "属性") { open_properties(&result.full_path); ui.close_menu(); }
                 });
@@ -1193,6 +1238,39 @@ impl FerrexApp {
         });
     }
 
+    fn draw_rename_modal(&mut self, ctx: &egui::Context) {
+        if let Some(old_path) = self.rename_path.clone() {
+            egui::Window::new("重命名")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.label(format!("原始路径: {}", old_path));
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.label("新名称: ");
+                        ui.text_edit_singleline(&mut self.rename_new_name);
+                    });
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("确定").clicked() {
+                            let old_p = std::path::Path::new(&old_path);
+                            if let Some(parent) = old_p.parent() {
+                                let new_path = parent.join(&self.rename_new_name);
+                                let _ = std::fs::rename(old_p, new_path);
+                            }
+                            self.rename_path = None;
+                            self.rename_new_name.clear();
+                        }
+                        if ui.button("取消").clicked() {
+                            self.rename_path = None;
+                            self.rename_new_name.clear();
+                        }
+                    });
+                });
+        }
+    }
+
     fn handle_scan_progress(&mut self, ctx: &egui::Context) {
         let mut reload_needed = false;
         while let Ok(msg) = self.scan_rx.try_recv() {
@@ -1258,6 +1336,12 @@ fn open_file(path: &str) {
     let _ = cmd.spawn();
 }
 
+fn batch_open_files(paths: Vec<String>) {
+    for path in paths {
+        open_file(&path);
+    }
+}
+
 fn reveal_in_explorer(path: &str) {
     let mut cmd = std::process::Command::new("explorer");
     #[cfg(windows)]
@@ -1273,6 +1357,38 @@ fn reveal_in_explorer(path: &str) {
         cmd.arg(path);
     }
     let _ = cmd.spawn();
+}
+
+fn delete_files(paths: Vec<String>) -> bool {
+    #[cfg(windows)]
+    {
+        let count = paths.len();
+        let msg = if count == 1 {
+            format!("确定要永久删除此文件吗？\n{}", paths[0])
+        } else {
+            format!("确定要永久删除这 {} 个项目吗？", count)
+        };
+
+        let confirm = rfd::MessageDialog::new()
+            .set_title("确认删除")
+            .set_description(&msg)
+            .set_buttons(rfd::MessageButtons::OkCancel)
+            .show();
+
+        if confirm == rfd::MessageDialogResult::Ok {
+            for path in paths {
+                let p = std::path::Path::new(&path);
+                if p.is_dir() {
+                    let _ = std::fs::remove_dir_all(p);
+                } else {
+                    let _ = std::fs::remove_file(p);
+                }
+            }
+            return true;
+        }
+    }
+    let _ = paths;
+    false
 }
 
 #[allow(unused_variables)]
