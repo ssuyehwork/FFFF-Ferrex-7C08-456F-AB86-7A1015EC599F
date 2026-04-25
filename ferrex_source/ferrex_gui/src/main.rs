@@ -974,8 +974,8 @@ impl FerrexApp {
                         ui.add_space(20.0);
                     }
 
-                    // 扩展名输入框 (占用所有剩余空间)
-                    let ext_w = ui.available_width();
+                    // 扩展名输入框 (固定 150 像素并向右缩进)
+                    let ext_w = 150.0;
                     let ext_edit = TextEdit::singleline(&mut self.ext_filter).font(FontId::new(13.0, FontFamily::Name("mono".into()))).hint_text(RichText::new("扩展名").color(TEXT3)).frame(false).margin(Margin::symmetric(4.0, 8.0)).text_color(TEXT);
                     let resp = ui.add_sized(Vec2::new(ext_w, 34.0), ext_edit);
 
