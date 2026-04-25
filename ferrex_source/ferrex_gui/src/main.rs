@@ -910,91 +910,83 @@ impl FerrexApp {
     fn draw_search_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let frame = Frame::none().fill(BG2).stroke(Stroke::new(1.0, BORDER2)).rounding(Rounding::ZERO).inner_margin(Margin::symmetric(5.0, 0.0));
         frame.show(ui, |ui| {
-            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 5.0;
-                
-                // 搜索图标
+            ui.spacing_mut().item_spacing.x = 5.0;
+            ui.horizontal(|ui| {
+                // 1. 图标
                 ui.add(egui::Image::new(egui::include_image!("../icons/search.svg")).max_size(Vec2::splat(16.0)));
                 
-                let search_btn_w = 80.0;
-                let sep_w = 24.0;
-                let clear_btn_w = 20.0;
-                let page_ctrl_w = 120.0;
-                // 留白优化：主搜索框占固定剩余比例或固定宽度，其余全给扩展名
-                let search_w = 400.0f32.min(ui.available_width() * 0.5);
-                let ext_w = ui.available_width() - search_w - sep_w - (clear_btn_w * 2.0) - search_btn_w - page_ctrl_w - (5.0 * 8.0);
-
-                // 1. 主搜索输入框
+                // 2. 主搜索输入框 (固定宽度)
+                let search_w = 380.0;
                 let search_edit = TextEdit::singleline(&mut self.query).font(FontId::new(13.0, FontFamily::Name("mono".into()))).hint_text(RichText::new("文件名 / 关键词...").color(TEXT3)).frame(false).margin(Margin::symmetric(4.0, 8.0)).text_color(TEXT);
                 let search_response = ui.add_sized(Vec2::new(search_w, 34.0), search_edit);
                 
                 if !self.query.is_empty() {
-                    let (rect, resp) = ui.allocate_exact_size(Vec2::new(clear_btn_w, 34.0), Sense::click());
-                    if resp.hovered() { ui.painter().text(rect.center(), Align2::CENTER_CENTER, "×", FontId::new(14.0, FontFamily::Name("mono".into())), DANGER); }
-                    else { ui.painter().text(rect.center(), Align2::CENTER_CENTER, "×", FontId::new(14.0, FontFamily::Name("mono".into())), TEXT3); }
+                    let (rect, resp) = ui.allocate_exact_size(Vec2::new(20.0, 34.0), Sense::click());
+                    let color = if resp.hovered() { DANGER } else { TEXT3 };
+                    ui.painter().text(rect.center(), Align2::CENTER_CENTER, "×", FontId::new(14.0, FontFamily::Name("mono".into())), color);
                     if resp.clicked() { self.query.clear(); self.run_search(ctx); }
                 } else {
-                    ui.add_space(clear_btn_w);
+                    ui.add_space(20.0);
                 }
 
                 let query_pop_id = ui.id().with("query_pop");
                 if ui.interact(search_response.rect, ui.id().with("search_hit"), Sense::click()).double_clicked() { ui.memory_mut(|m| m.open_popup(query_pop_id)); }
                 egui::popup_below_widget(ui, query_pop_id, &search_response, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| { self.draw_history_popup_content(ui, ctx, true, search_w); });
 
-                // 2. 竖线分隔符 (橙色分隔符)
-                let (dot_rect, _) = ui.allocate_exact_size(Vec2::new(sep_w, 34.0), Sense::hover());
+                // 3. 橙色分隔符
+                let (dot_rect, _) = ui.allocate_exact_size(Vec2::new(24.0, 34.0), Sense::hover());
                 ui.painter().rect_filled(dot_rect, Rounding::ZERO, BG3);
                 ui.painter().text(dot_rect.center(), Align2::CENTER_CENTER, "|", FontId::new(14.0, FontFamily::Name("mono".into())), ACCENT);
 
-                // 3. 扩展名输入框 (回右侧)
-                let ext_edit = TextEdit::singleline(&mut self.ext_filter).font(FontId::new(13.0, FontFamily::Name("mono".into()))).hint_text(RichText::new("扩展名").color(TEXT3)).frame(false).margin(Margin::symmetric(4.0, 8.0)).text_color(TEXT);
-                let ext_response = ui.add_sized(Vec2::new(ext_w, 34.0), ext_edit);
-
-                if !self.ext_filter.is_empty() {
-                    let (rect, resp) = ui.allocate_exact_size(Vec2::new(clear_btn_w, 34.0), Sense::click());
-                    if resp.hovered() { ui.painter().text(rect.center(), Align2::CENTER_CENTER, "×", FontId::new(14.0, FontFamily::Name("mono".into())), DANGER); }
-                    else { ui.painter().text(rect.center(), Align2::CENTER_CENTER, "×", FontId::new(14.0, FontFamily::Name("mono".into())), TEXT3); }
-                    if resp.clicked() { self.ext_filter.clear(); self.run_search(ctx); }
-                } else {
-                    ui.add_space(clear_btn_w);
-                }
-
-                let ext_pop_id = ui.id().with("ext_pop");
-                if ui.interact(ext_response.rect, ui.id().with("ext_hit"), Sense::click()).double_clicked() { ui.memory_mut(|m| m.open_popup(ext_pop_id)); }
-                egui::popup_below_widget(ui, ext_pop_id, &ext_response, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| { self.draw_history_popup_content(ui, ctx, false, ext_w); });
-                
+                // 4. 右侧对齐部分：分页 + 搜索按钮 + 扩展名框 (从右往左排列)
                 let mut trigger_search = false;
+                let mut ext_response_opt = None;
 
-                // 4. 搜索按钮
-                let search_btn = egui::Button::new(RichText::new("搜索").font(FontId::new(13.0, FontFamily::Name("cond".into()))).color(Color32::BLACK).strong()).fill(ACCENT).rounding(Rounding::ZERO);
-                if ui.add_sized(Vec2::new(search_btn_w, 34.0), search_btn).clicked() {
-                    trigger_search = true;
-                }
-
-                // 5. 翻页控件 (最右侧，替换原扩展名区域位置)
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.spacing_mut().item_spacing.x = 8.0;
+                    ui.spacing_mut().item_spacing.x = 5.0;
+
+                    // 最右侧：分页控件
                     let total_pages = (self.results.len() + PAGE_SIZE - 1) / PAGE_SIZE;
                     let total_pages = total_pages.max(1);
-
                     let next_btn = egui::Button::new(RichText::new(">").font(FontId::new(14.0, FontFamily::Name("mono".into()))).color(TEXT)).fill(BG3).rounding(Rounding::ZERO);
                     if ui.add_sized(Vec2::new(24.0, 24.0), next_btn).clicked() {
-                        if self.current_page + 1 < total_pages {
-                            self.current_page += 1;
-                            ctx.request_repaint();
-                        }
+                        if self.current_page + 1 < total_pages { self.current_page += 1; ctx.request_repaint(); }
                     }
-
                     ui.label(RichText::new(format!("{}/{}", self.current_page + 1, total_pages)).font(FontId::new(11.0, FontFamily::Name("mono".into()))).color(TEXT2));
-
                     let prev_btn = egui::Button::new(RichText::new("<").font(FontId::new(14.0, FontFamily::Name("mono".into()))).color(TEXT)).fill(BG3).rounding(Rounding::ZERO);
                     if ui.add_sized(Vec2::new(24.0, 24.0), prev_btn).clicked() {
-                        if self.current_page > 0 {
-                            self.current_page -= 1;
-                            ctx.request_repaint();
-                        }
+                        if self.current_page > 0 { self.current_page -= 1; ctx.request_repaint(); }
                     }
+
+                    // 紧邻分页：搜索按钮
+                    let search_btn = egui::Button::new(RichText::new("搜索").font(FontId::new(13.0, FontFamily::Name("cond".into()))).color(Color32::BLACK).strong()).fill(ACCENT).rounding(Rounding::ZERO);
+                    if ui.add_sized(Vec2::new(80.0, 34.0), search_btn).clicked() {
+                        trigger_search = true;
+                    }
+
+                    // 扩展名清空按钮
+                    if !self.ext_filter.is_empty() {
+                        let (rect, resp) = ui.allocate_exact_size(Vec2::new(20.0, 34.0), Sense::click());
+                        let color = if resp.hovered() { DANGER } else { TEXT3 };
+                        ui.painter().text(rect.center(), Align2::CENTER_CENTER, "×", FontId::new(14.0, FontFamily::Name("mono".into())), color);
+                        if resp.clicked() { self.ext_filter.clear(); self.run_search(ctx); }
+                    } else {
+                        ui.add_space(20.0);
+                    }
+
+                    // 扩展名输入框 (占用所有剩余空间)
+                    let ext_w = ui.available_width();
+                    let ext_edit = TextEdit::singleline(&mut self.ext_filter).font(FontId::new(13.0, FontFamily::Name("mono".into()))).hint_text(RichText::new("扩展名").color(TEXT3)).frame(false).margin(Margin::symmetric(4.0, 8.0)).text_color(TEXT);
+                    let resp = ui.add_sized(Vec2::new(ext_w, 34.0), ext_edit);
+
+                    let ext_pop_id = ui.id().with("ext_pop");
+                    if ui.interact(resp.rect, ui.id().with("ext_hit"), Sense::click()).double_clicked() { ui.memory_mut(|m| m.open_popup(ext_pop_id)); }
+                    ext_response_opt = Some(resp);
                 });
+
+                let ext_response = ext_response_opt.unwrap();
+                let ext_pop_id = ui.id().with("ext_pop");
+                egui::popup_below_widget(ui, ext_pop_id, &ext_response, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| { self.draw_history_popup_content(ui, ctx, false, ext_response.rect.width()); });
 
                 if !trigger_search {
                     trigger_search = (search_response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) || 
