@@ -916,41 +916,19 @@ impl FerrexApp {
                 // 搜索图标
                 ui.add(egui::Image::new(egui::include_image!("../icons/search.svg")).max_size(Vec2::splat(16.0)));
                 
+                let search_btn_w = 80.0;
                 let ext_w = 80.0;
                 let sep_w = 24.0;
                 let clear_btn_w = 20.0;
-                let search_btn_w = 80.0;
                 let page_ctrl_w = 120.0;
                 let spacing = 5.0 * 8.0;
 
                 let search_w = ui.available_width() - ext_w - sep_w - (clear_btn_w * 2.0) - search_btn_w - page_ctrl_w - spacing;
 
-                // 1. 扩展名输入框 (移到左侧)
-                let ext_edit = TextEdit::singleline(&mut self.ext_filter).font(FontId::new(13.0, FontFamily::Name("mono".into()))).hint_text(RichText::new("扩展名").color(TEXT3)).frame(false).margin(Margin::symmetric(4.0, 8.0)).text_color(TEXT);
-                let ext_response = ui.add_sized(Vec2::new(ext_w, 34.0), ext_edit);
-                
-                if !self.ext_filter.is_empty() {
-                    let (rect, resp) = ui.allocate_exact_size(Vec2::new(clear_btn_w, 34.0), Sense::click());
-                    if resp.hovered() { ui.painter().text(rect.center(), Align2::CENTER_CENTER, "×", FontId::new(14.0, FontFamily::Name("mono".into())), DANGER); }
-                    else { ui.painter().text(rect.center(), Align2::CENTER_CENTER, "×", FontId::new(14.0, FontFamily::Name("mono".into())), TEXT3); }
-                    if resp.clicked() { self.ext_filter.clear(); self.run_search(ctx); }
-                } else {
-                    ui.add_space(clear_btn_w);
-                }
-
-                let ext_pop_id = ui.id().with("ext_pop");
-                if ui.interact(ext_response.rect, ui.id().with("ext_hit"), Sense::click()).double_clicked() { ui.memory_mut(|m| m.open_popup(ext_pop_id)); }
-                egui::popup_below_widget(ui, ext_pop_id, &ext_response, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| { self.draw_history_popup_content(ui, ctx, false, ext_w); });
-
-                // 2. 竖线分隔符 (保留背景色)
-                let (dot_rect, _) = ui.allocate_exact_size(Vec2::new(sep_w, 34.0), Sense::hover());
-                ui.painter().rect_filled(dot_rect, Rounding::ZERO, BG3);
-                ui.painter().text(dot_rect.center(), Align2::CENTER_CENTER, "|", FontId::new(14.0, FontFamily::Name("mono".into())), TEXT3);
-
-                // 3. 主搜索输入框
+                // 1. 主搜索输入框
                 let search_edit = TextEdit::singleline(&mut self.query).font(FontId::new(13.0, FontFamily::Name("mono".into()))).hint_text(RichText::new("文件名 / 关键词...").color(TEXT3)).frame(false).margin(Margin::symmetric(4.0, 8.0)).text_color(TEXT);
                 let search_response = ui.add_sized(Vec2::new(search_w, 34.0), search_edit);
-
+                
                 if !self.query.is_empty() {
                     let (rect, resp) = ui.allocate_exact_size(Vec2::new(clear_btn_w, 34.0), Sense::click());
                     if resp.hovered() { ui.painter().text(rect.center(), Align2::CENTER_CENTER, "×", FontId::new(14.0, FontFamily::Name("mono".into())), DANGER); }
@@ -963,6 +941,28 @@ impl FerrexApp {
                 let query_pop_id = ui.id().with("query_pop");
                 if ui.interact(search_response.rect, ui.id().with("search_hit"), Sense::click()).double_clicked() { ui.memory_mut(|m| m.open_popup(query_pop_id)); }
                 egui::popup_below_widget(ui, query_pop_id, &search_response, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| { self.draw_history_popup_content(ui, ctx, true, search_w); });
+
+                // 2. 竖线分隔符 (橙色分隔符)
+                let (dot_rect, _) = ui.allocate_exact_size(Vec2::new(sep_w, 34.0), Sense::hover());
+                ui.painter().rect_filled(dot_rect, Rounding::ZERO, BG3);
+                ui.painter().text(dot_rect.center(), Align2::CENTER_CENTER, "|", FontId::new(14.0, FontFamily::Name("mono".into())), ACCENT);
+
+                // 3. 扩展名输入框 (回右侧)
+                let ext_edit = TextEdit::singleline(&mut self.ext_filter).font(FontId::new(13.0, FontFamily::Name("mono".into()))).hint_text(RichText::new("扩展名").color(TEXT3)).frame(false).margin(Margin::symmetric(4.0, 8.0)).text_color(TEXT);
+                let ext_response = ui.add_sized(Vec2::new(ext_w, 34.0), ext_edit);
+
+                if !self.ext_filter.is_empty() {
+                    let (rect, resp) = ui.allocate_exact_size(Vec2::new(clear_btn_w, 34.0), Sense::click());
+                    if resp.hovered() { ui.painter().text(rect.center(), Align2::CENTER_CENTER, "×", FontId::new(14.0, FontFamily::Name("mono".into())), DANGER); }
+                    else { ui.painter().text(rect.center(), Align2::CENTER_CENTER, "×", FontId::new(14.0, FontFamily::Name("mono".into())), TEXT3); }
+                    if resp.clicked() { self.ext_filter.clear(); self.run_search(ctx); }
+                } else {
+                    ui.add_space(clear_btn_w);
+                }
+
+                let ext_pop_id = ui.id().with("ext_pop");
+                if ui.interact(ext_response.rect, ui.id().with("ext_hit"), Sense::click()).double_clicked() { ui.memory_mut(|m| m.open_popup(ext_pop_id)); }
+                egui::popup_below_widget(ui, ext_pop_id, &ext_response, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| { self.draw_history_popup_content(ui, ctx, false, ext_w); });
                 
                 let mut trigger_search = false;
 
